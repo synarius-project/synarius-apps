@@ -3,7 +3,7 @@
 PyInstaller one-file Windows build bundling ``synarius_dataviewer``, Qt, and scientific stack.
 
 Qt needs ``collect_all('PySide6')`` (platform plugins). ``pandas`` / ``pyarrow`` / ``asammdf``
-/ ``pyqtgraph`` pull many data files and hidden imports — bundle them explicitly.
+pull many data files and hidden imports — bundle them explicitly.
 
 From repo root (after ``pip install . pyinstaller``)::
 
@@ -29,7 +29,6 @@ for _pkg in (
     "sqlalchemy",
     "PySide6",
     "shiboken6",
-    "pyqtgraph",
     "pandas",
     "pyarrow",
     "asammdf",

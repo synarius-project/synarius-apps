@@ -30,8 +30,11 @@ class TimeSeriesBundle:
         if name not in self.data.columns:
             raise KeyError(name)
         s = self.data[name]
-        t_idx = self.data.index.to_numpy(dtype=np.float64, copy=False)
-        t, y = _series_to_plot_xy(t_idx, s)
+        t_idx = np.asarray(self.data.index.to_numpy(dtype=np.float64, copy=False), dtype=np.float64)
+        try:
+            t, y = _series_to_plot_xy(t_idx, s)
+        except Exception:
+            t, y = _expand_object_signal(t_idx, s)
         mask = np.isfinite(t) & np.isfinite(y)
         return t[mask], y[mask]
 
@@ -101,18 +104,34 @@ def _expand_object_signal(t_base: np.ndarray, series: pd.Series) -> tuple[np.nda
     return np.concatenate(t_parts), np.concatenate(y_parts)
 
 
+def _looks_like_vector_cells(series: pd.Series, sample: int) -> bool:
+    n = min(len(series), sample)
+    for i in range(n):
+        v = series.iloc[i]
+        if isinstance(v, (list, tuple, memoryview)):
+            return True
+        if isinstance(v, np.ndarray) and v.ndim > 0:
+            return True
+    return False
+
+
 def _series_to_plot_xy(t_index: np.ndarray, series: pd.Series) -> tuple[np.ndarray, np.ndarray]:
     """Return aligned (t, y) for plotting; handles numeric columns and MDF-style sequence cells."""
     t = np.asarray(t_index, dtype=np.float64)
+    if len(series) == 0:
+        return np.array([], dtype=np.float64), np.array([], dtype=np.float64)
     if pd.api.types.is_object_dtype(series.dtype):
         return _expand_object_signal(t, series)
-    for i in range(min(len(series), 32)):
-        v = series.iloc[i]
-        if isinstance(v, (list, tuple, np.ndarray, memoryview)):
-            return _expand_object_signal(t, series)
+    if _looks_like_vector_cells(series, 256):
+        return _expand_object_signal(t, series)
     try:
-        y = pd.to_numeric(series, errors="coerce").to_numpy(dtype=np.float64, copy=True)
+        num = pd.to_numeric(series, errors="coerce")
+        y = np.asarray(num, dtype=np.float64)
     except (ValueError, TypeError):
+        return _expand_object_signal(t, series)
+    except Exception:
+        return _expand_object_signal(t, series)
+    if y.size != t.size:
         return _expand_object_signal(t, series)
     if y.size and not np.any(np.isfinite(y)):
         return _expand_object_signal(t, series)
