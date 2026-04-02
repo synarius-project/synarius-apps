@@ -39,6 +39,12 @@ package-dir = {"" = "src"}
 where = ["src"]
 include = ["synarius_dataviewer*", "synariustools*"]
 
+# Non-Python assets must be declared or wheels/CI installs lack toolbar icons; Studio's bundled
+# DataViewer then fails at runtime (FileNotFoundError) when opening the live plot widget.
+[tool.setuptools.package-data]
+"synariustools.tools.plotwidget" = ["icons/**/*.svg"]
+"synarius_dataviewer.app" = ["icons/**/*.svg", "icons/**/*.png"]
+
 [tool.pyright]
 extraPaths = ["../synarius-core/src"]
 
