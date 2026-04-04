@@ -56,6 +56,8 @@ class PixmapScopeWidget(QWidget):
         self._num_yticks = 6
         self._walking = False
         self._walk_span = 10.0
+        # Left edge of the walking window while filling; scrolling starts after t passes origin + width.
+        self._walk_fill_origin: float | None = None
 
         self.checkslider = False
         # Slider positions in data (x) units so they stay fixed when the x-axis is rescaled.
@@ -109,11 +111,12 @@ class PixmapScopeWidget(QWidget):
         self._apply_walk_or_refresh()
 
     def set_series_visible(self, name: str, visible: bool) -> None:
+        """Toggle trace visibility without auto-ranging (legend checkboxes)."""
         ch = self._channels.get(name)
         if ch is None:
             return
         ch["visible"] = bool(visible)
-        self._apply_walk_or_refresh()
+        self.refresh_pixmap()
 
     def is_series_visible(self, name: str) -> bool:
         ch = self._channels.get(name)
@@ -130,6 +133,7 @@ class PixmapScopeWidget(QWidget):
             self.max_x = 1.0
             self.min_y = 0.0
             self.max_y = 1.0
+            self._walk_fill_origin = None
             self._slider_x_a = None
             self._slider_x_b = None
             self.refresh_pixmap()
@@ -140,6 +144,7 @@ class PixmapScopeWidget(QWidget):
         self.max_x = 1.0
         self.min_y = 0.0
         self.max_y = 1.0
+        self._walk_fill_origin = None
         self._slider_x_a = None
         self._slider_x_b = None
         self.refresh_pixmap()
@@ -156,6 +161,7 @@ class PixmapScopeWidget(QWidget):
     def set_walking_axis(self, enabled: bool, span: float = 10.0) -> None:
         self._walking = enabled
         self._walk_span = max(span, 1e-9)
+        self._walk_fill_origin = None
         self._apply_walk_or_refresh()
 
     def _pooled_finite(self, key: str, max_points: int = _POOL_MAX) -> np.ndarray:
@@ -295,8 +301,22 @@ class PixmapScopeWidget(QWidget):
             tw = self._walk_span
             if t_pool is not None and t_pool.size > 0:
                 tw = self._walk_window_width_data_units(t_pool)
-            self.max_x = walking_t_ref
-            self.min_x = walking_t_ref - tw
+            t_end = float(walking_t_ref)
+            if t_pool is not None and t_pool.size > 0 and self._walk_fill_origin is None:
+                self._walk_fill_origin = float(np.min(t_pool))
+            origin = (
+                float(self._walk_fill_origin)
+                if self._walk_fill_origin is not None
+                else t_end - tw
+            )
+            right = origin + tw
+            eps = 1e-12 * max(1.0, abs(right))
+            if t_end <= right + eps:
+                self.min_x = origin
+                self.max_x = right
+            else:
+                self.max_x = t_end
+                self.min_x = t_end - tw
         elif x_span is not None:
             x_lo, x_hi = x_span
             span_x = x_hi - x_lo

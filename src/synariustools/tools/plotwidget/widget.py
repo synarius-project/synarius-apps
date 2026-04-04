@@ -8,7 +8,7 @@ from typing import Literal, cast
 
 import numpy as np
 from PySide6.QtCore import QEvent, QMimeData, QObject, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QDragEnterEvent, QDragMoveEvent, QDropEvent, QPen
+from PySide6.QtGui import QAction, QBrush, QColor, QDragEnterEvent, QDragMoveEvent, QDropEvent, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -50,7 +50,6 @@ from synariustools.tools.plotwidget.series_math import (
     latest_y,
 )
 from synariustools.tools.plotwidget.svg_icons import icon_from_tinted_svg_file
-
 
 def _find_window_host(widget: QWidget) -> QWidget | None:
     w: QWidget | None = widget
@@ -160,6 +159,7 @@ class DataViewerWidget(QWidget):
         icon_fg = QColor(STUDIO_TOOLBAR_FOREGROUND)
 
         self._walk_action = None
+        self._toolbar_action_groups: set[str] = set()
 
         self._scope_action = self._toolbar.addAction("Scope")
         self._scope_action.setIcon(
@@ -770,6 +770,30 @@ class DataViewerWidget(QWidget):
         self._position_hint()
         if self._slider_action.isChecked():
             self._refresh_slider_legend_values()
+
+    def add_toolbar_action_group(
+        self,
+        group_id: str,
+        actions: Sequence[QAction],
+        *,
+        separator: bool = True,
+        spacing_px: int = 12,
+    ) -> bool:
+        """Append an extra toolbar action group once; returns True when inserted."""
+        if not group_id or group_id in self._toolbar_action_groups:
+            return False
+        if not actions:
+            return False
+        if separator:
+            self._toolbar.addSeparator()
+        if spacing_px > 0:
+            gap = QWidget(self._toolbar)
+            gap.setFixedWidth(int(spacing_px))
+            self._toolbar.addWidget(gap)
+        for act in actions:
+            self._toolbar.addAction(act)
+        self._toolbar_action_groups.add(group_id)
+        return True
 
     def set_channel_data(self, name: str, t: np.ndarray, y: np.ndarray) -> None:
         t = np.asarray(t, dtype=np.float64)

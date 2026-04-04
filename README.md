@@ -2,7 +2,7 @@
 
 ![Synarius title image](docs/_static/synarius-title.png)
 
-**synarius-apps** bundles the **Synarius DataViewer** (MDI desktop app for inspecting time-series and measurements) and shared Qt UI pieces under **`synariustools`**, especially the reusable scope/legend plot widget. It depends on **[synarius-core](https://github.com/synarius-project/synarius-core)**.
+**synarius-apps** bundles the **Synarius DataViewer** (MDI desktop app for inspecting time-series and measurements), **Synarius ParaWiz** (reference app for parameter-set workflows), and shared Qt UI pieces under **`synariustools`**, especially the reusable scope/legend plot widget. It depends on **[synarius-core](https://github.com/synarius-project/synarius-core)**.
 
 | | |
 |--|--|
@@ -40,6 +40,12 @@ Console entry point (name kept for compatibility):
 synarius-dataviewer
 ```
 
+ParaWiz entry point:
+
+```bash
+synarius-parawiz
+```
+
 ## Branches and automation
 
 | Branch | Workflows |
@@ -58,6 +64,7 @@ git push origin v0.0.1
 ## Layout
 
 - `src/synarius_dataviewer/` — Dataviewer application package (console script `synarius-dataviewer`)
+- `src/synarius_parawiz/` — ParaWiz application package (console script `synarius-parawiz`)
 - `src/synariustools/tools/plotwidget/` — reusable Qt plot widget (`DataViewerWidget`, `create_data_viewer`, …)
 - `docs/` — Sphinx + sphinx-needs + zerovm theme
 - `synarius_dataviewer.spec` — PyInstaller one-file spec for the Windows installer job

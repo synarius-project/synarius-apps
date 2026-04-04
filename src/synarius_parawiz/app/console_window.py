@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+import traceback
+from datetime import datetime
+from typing import Callable
+
+from PySide6.QtGui import QFontDatabase
+from PySide6.QtWidgets import QHBoxLayout, QLineEdit, QMainWindow, QPushButton, QPlainTextEdit, QVBoxLayout, QWidget
+from synarius_core.controller import MinimalController
+
+from synarius_dataviewer.app import theme
+
+
+class ConsoleWindow(QMainWindow):
+    """Standalone REPL view backed by the shared MinimalController instance."""
+
+    def __init__(self, controller: MinimalController, *, on_command_executed: Callable[[], None]) -> None:
+        super().__init__()
+        self._controller = controller
+        self._on_command_executed = on_command_executed
+        self.setWindowTitle("Synarius ParaWiz — CLI")
+        self.resize(960, 520)
+
+        root = QWidget(self)
+        self.setCentralWidget(root)
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        self._log = QPlainTextEdit(self)
+        self._log.setReadOnly(True)
+        mono = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        self._log.setFont(mono)
+        self._log.setStyleSheet(
+            f"QPlainTextEdit {{ background: {theme.CONSOLE_CHROME_BACKGROUND}; color: {theme.CONSOLE_TAB_TEXT}; border: none; }}"
+        )
+        layout.addWidget(self._log, stretch=1)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self._cmd = QLineEdit(self)
+        self._cmd.setPlaceholderText("Enter command, e.g. cd @main/parameters/data_sets")
+        self._cmd.returnPressed.connect(self._execute_current)
+        row.addWidget(self._cmd, stretch=1)
+        self._run = QPushButton("Run", self)
+        self._run.clicked.connect(self._execute_current)
+        row.addWidget(self._run, stretch=0)
+        layout.addLayout(row)
+
+        self._append("INFO", "synarius_parawiz.console", "console started")
+
+    def _now(self) -> str:
+        return datetime.now().strftime("%H:%M:%S")
+
+    def _append(self, level: str, logger: str, message: str) -> None:
+        self._log.appendPlainText(f"{self._now()} {level:<5} {logger} | {message}")
+        self._log.verticalScrollBar().setValue(self._log.verticalScrollBar().maximum())
+
+    def _execute_current(self) -> None:
+        cmd = self._cmd.text().strip()
+        if not cmd:
+            return
+        self._cmd.clear()
+        self._append("INFO", "synarius_parawiz.console", f"command [repl]: {cmd}")
+        try:
+            out = self._controller.execute(cmd)
+            suffix = f" -> {out}" if out else ""
+            self._append("INFO", "synarius_parawiz.console", f"command [repl] ok: {cmd}{suffix}")
+            self._on_command_executed()
+        except Exception as exc:
+            self._append("ERROR", "synarius_parawiz.console", f"command [repl] raised: {cmd}")
+            tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).rstrip()
+            for ln in tb.splitlines():
+                self._append("ERROR", "synarius_parawiz.console", ln)
+
+    def show_and_raise(self) -> None:
+        self.show()
+        self.raise_()
+        self.activateWindow()

@@ -27,6 +27,33 @@
       },
       "console": "integratedTerminal",
       "justMyCode": true
+    },
+    {
+      "name": "Apps / ParaWiz (Run)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "synarius_parawiz",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src;${workspaceFolder}/../synarius-core/src"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "stopOnEntry": false
+    },
+    {
+      "name": "Apps / ParaWiz (Debug)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "synarius_parawiz",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src;${workspaceFolder}/../synarius-core/src"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": true
     }
   ]
 }
