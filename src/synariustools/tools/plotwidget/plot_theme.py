@@ -45,7 +45,8 @@ def studio_toolbar_stylesheet() -> str:
     return (
         f"QToolBar {{ background-color: {bg}; border: none; padding: 3px; spacing: 4px; }}"
         f"QToolBar QLabel {{ color: {fg}; }}"
-        f"QToolBar QToolButton {{ background-color: {bg}; border: none; border-radius: 4px; padding: 4px; }}"
+        f"QToolBar QToolButton {{ background-color: {bg}; color: {fg}; "
+        f"border: none; border-radius: 4px; padding: 4px; }}"
         f"QToolBar QToolButton:hover {{ background-color: {tb_hover}; }}"
         f"QToolBar QToolButton:pressed {{ background-color: {tb_pressed}; }}"
         f"QToolBar QToolButton:checked {{ background-color: {action_checked}; }}"

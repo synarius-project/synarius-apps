@@ -25,6 +25,10 @@ class StatusMessageProgressBar(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._bar = QProgressBar(self)
         self._bar.setTextVisible(False)
+        self._bar.setFixedHeight(self._bar_height)
+        self._bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._bar.setRange(0, 1)
+        self._bar.setValue(0)
         self._accent = accent_color
         self._apply_bar_style()
         self._label = QLabel(self)
@@ -34,10 +38,11 @@ class StatusMessageProgressBar(QWidget):
         self._label.setWordWrap(False)
         # Legible on light track and on blue chunk (QSSE has limited shadow support)
         self._label.setStyleSheet(
-            "QLabel { background: transparent; color: #141414; padding-left: 6px; padding-right: 4px; "
-            "font-size: 11px; font-weight: 600; }"
+            "QLabel { background: transparent; color: #141414; font-size: 11px; font-weight: 600; }"
         )
+        self._label.setContentsMargins(6, 0, 4, 0)
         self._full_text = ""
+        self._layout_children()
 
     def _apply_bar_style(self) -> None:
         a = self._accent
@@ -62,20 +67,31 @@ class StatusMessageProgressBar(QWidget):
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
+        self._layout_children()
+        self._refresh_label_elide()
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        # First show inside QStatusBar can happen before a stable child geometry pass.
+        # Force one deterministic relayout to avoid a visually clipped left edge.
+        self._layout_children()
+        self._refresh_label_elide()
+
+    def _layout_children(self) -> None:
         r = self.rect()
         bh = self._bar_height
         y = max(0, (r.height() - bh) // 2)
         self._bar.setGeometry(0, y, r.width(), bh)
         self._label.setGeometry(r)
         self._label.raise_()
-        self._refresh_label_elide()
 
     def _refresh_label_elide(self) -> None:
         if not self._full_text:
             self._label.setText("")
             return
         fm = QFontMetrics(self._label.font())
-        w = max(8, self.width() - 12)
+        cr = self._label.contentsRect()
+        w = max(8, cr.width())
         self._label.setText(fm.elidedText(self._full_text, Qt.TextElideMode.ElideRight, w))
 
     def set_message(self, text: str) -> None:

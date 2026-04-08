@@ -6,6 +6,7 @@
       "type": "debugpy",
       "request": "launch",
       "module": "synarius_dataviewer",
+      "noDebug": true,
       "python": "${workspaceFolder}/.venv/Scripts/python.exe",
       "cwd": "${workspaceFolder}",
       "env": {
@@ -33,6 +34,7 @@
       "type": "debugpy",
       "request": "launch",
       "module": "synarius_parawiz",
+      "noDebug": true,
       "python": "${workspaceFolder}/.venv/Scripts/python.exe",
       "cwd": "${workspaceFolder}",
       "env": {

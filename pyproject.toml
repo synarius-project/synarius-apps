@@ -7,11 +7,12 @@ name = "synarius-apps"
 version = "0.0.1"
 description = "Synarius applications and shared tools (Dataviewer, synariustools plot widget; built on synarius-core)."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11,<3.12"
 license = { file = "LICENSE" }
 authors = [{ name = "Synarius Contributors" }]
 classifiers = [
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
   "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
 ]
 dependencies = [
@@ -26,6 +27,7 @@ dependencies = [
   "pyarrow>=14.0.0",
   "asammdf>=7.0.0",
   "numpy>=1.24.0",
+  "platformdirs>=4.0.0",
   # Calibration map / curve viewer (ParaWiz, future Studio embedding).
   "matplotlib>=3.8.0",
   "holoviews>=1.18.0",
@@ -43,7 +45,7 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["synarius_dataviewer*", "synarius_parawiz*", "synariustools*"]
+include = ["synarius_apps_diagnostics*", "synarius_dataviewer*", "synarius_parawiz*", "synariustools*"]
 
 # Non-Python assets must be declared or wheels/CI installs lack toolbar icons; Studio's bundled
 # DataViewer then fails at runtime (FileNotFoundError) when opening the live plot widget.
@@ -52,7 +54,8 @@ include = ["synarius_dataviewer*", "synarius_parawiz*", "synariustools*"]
 "synariustools.tools.plotwidget" = ["icons/**/*.svg"]
 "synariustools.tools.calmapwidget" = ["icons/*.svg"]
 "synarius_dataviewer.app" = ["icons/**/*.svg", "icons/**/*.png"]
-"synarius_parawiz" = ["icons/breeze/*.svg", "icons/breeze/*.txt"]
+# Root-level SVGs (category icons, equal/nequal filter buttons) plus Breeze toolbar assets.
+"synarius_parawiz" = ["icons/*.svg", "icons/breeze/*.svg", "icons/breeze/*.txt"]
 
 [tool.pyright]
 extraPaths = ["../synarius-core/src"]

@@ -11,6 +11,7 @@ from synariustools.tools.calmapwidget.widget import (
     CalibrationMapCompareWidget,
     CalibrationMapShell,
     CalibrationMapWidget,
+    build_scalar_calibration_readonly_widget,
     create_calibration_map_compare_viewer,
     exec_scalar_calibration_edit_dialog,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "CalibrationMapCompareWidget",
     "CalibrationMapShell",
     "CalibrationMapWidget",
+    "build_scalar_calibration_readonly_widget",
     "create_calibration_map_compare_viewer",
     "create_calibration_map_viewer",
     "exec_scalar_calibration_edit_dialog",

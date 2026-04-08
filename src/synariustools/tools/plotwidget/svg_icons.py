@@ -52,3 +52,34 @@ def icon_from_tinted_svg_file(
     pm = QPixmap.fromImage(img)
     pm.setDevicePixelRatio(dpr)
     return QIcon(pm)
+
+
+def icon_from_svg_file(
+    svg_path: Path,
+    *,
+    logical_side: int = 20,
+) -> QIcon:
+    """SVG wie in der Datei gerendert (ohne Farb-Ersetzung); für farbige oder fest gestaltete Symbole."""
+    raw = svg_path.read_text(encoding="utf-8")
+    renderer = QSvgRenderer(QByteArray(raw.encode("utf-8")))
+    if not renderer.isValid():
+        return QIcon(str(svg_path))
+
+    app = QGuiApplication.instance()
+    dpr = 1.0
+    if app is not None:
+        screen = app.primaryScreen()
+        if screen is not None:
+            dpr = max(1.0, float(screen.devicePixelRatio()))
+
+    px = max(1, int(round(logical_side * dpr)))
+    img = QImage(px, px, QImage.Format.Format_ARGB32)
+    img.fill(Qt.GlobalColor.transparent)
+    p = QPainter(img)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    renderer.render(p, QRectF(0.0, 0.0, float(px), float(px)))
+    p.end()
+
+    pm = QPixmap.fromImage(img)
+    pm.setDevicePixelRatio(dpr)
+    return QIcon(pm)

@@ -10,5 +10,7 @@ dist/
 docs/_build/
 docs/_sphinx_test_build/
 .venv/
+.venv_old/
 venv/
+parawiz-profile.txt
 .env

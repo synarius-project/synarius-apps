@@ -1,28 +1,40 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Callable
 
-from PySide6.QtGui import QFontDatabase, QIcon
-from PySide6.QtWidgets import QHBoxLayout, QLineEdit, QMainWindow, QPushButton, QPlainTextEdit, QVBoxLayout, QWidget
+from PySide6.QtGui import QIcon
+from PySide6.QtWidgets import QMainWindow, QVBoxLayout, QWidget
 from synarius_core.controller import CommandError, MinimalController
 
 from synarius_dataviewer.app import theme
+from synariustools.tools.terminal_console import TerminalConsoleWidget
+
+# Sehr große CCP-Ausgaben (z. B. ``ls`` im Wurzelverzeichnis) als eine Zeile → Speicher/Widgets belasten.
+_MAX_REPL_OUTPUT_CHARS = 120_000
+DEFAULT_OUTPUT_COLOR = "#ADD8E6"
+DEFAULT_PROMPT_COLOR = "#90EE90"
+DEFAULT_ERROR_COLOR = "#FF6666"
+DEFAULT_INPUT_COLOR = "#FFFFFF"
 
 
 class ConsoleWindow(QMainWindow):
-    """Standalone REPL view backed by the shared MinimalController instance."""
+    """Standalone REPL view backed by shared execute callback."""
 
     def __init__(
         self,
-        controller: MinimalController,
         *,
-        on_command_executed: Callable[[], None],
+        controller: MinimalController,
+        on_execute_line: Callable[[str, str], str | None],
+        prompt_provider: Callable[[], str],
+        on_command_executed: Callable[[str], None],
         app_icon: QIcon | None = None,
     ) -> None:
         super().__init__()
         self._controller = controller
+        self._on_execute_line = on_execute_line
+        self._prompt_provider = prompt_provider
         self._on_command_executed = on_command_executed
+        self._default_output_color = DEFAULT_OUTPUT_COLOR
         self.setWindowTitle("Synarius ParaWiz — CLI")
         self.resize(960, 520)
         if app_icon is not None and not app_icon.isNull():
@@ -34,61 +46,115 @@ class ConsoleWindow(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        self._log = QPlainTextEdit(self)
-        self._log.setReadOnly(True)
-        mono = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
-        self._log.setFont(mono)
-        self._log.setStyleSheet(
-            f"QPlainTextEdit {{ background: {theme.CONSOLE_CHROME_BACKGROUND}; color: {theme.CONSOLE_TAB_TEXT}; border: none; }}"
+        self._console = TerminalConsoleWidget(
+            self._on_submit,
+            self._history_prev,
+            self._history_next,
+            self,
+            input_color=DEFAULT_INPUT_COLOR,
+            output_color=self._default_output_color,
         )
-        layout.addWidget(self._log, stretch=1)
+        self._console.setStyleSheet(
+            f"background-color: {theme.CONSOLE_CHROME_BACKGROUND}; "
+            f"color: {theme.CONSOLE_TAB_TEXT}; "
+            "font-family: Consolas, Courier New, monospace; "
+            "border: none;"
+        )
+        layout.addWidget(self._console, 1)
 
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        self._cmd = QLineEdit(self)
-        self._cmd.setPlaceholderText("Enter command, e.g. cd @main/parameters/data_sets")
-        self._cmd.returnPressed.connect(self._execute_current)
-        row.addWidget(self._cmd, stretch=1)
-        self._run = QPushButton("Run", self)
-        self._run.clicked.connect(self._execute_current)
-        row.addWidget(self._run, stretch=0)
-        layout.addLayout(row)
+        self._history: list[str] = []
+        self._history_idx = 0
+        self._console.append_output("synarius-core minimal CLI", self._default_output_color)
+        self._console.append_output("Type 'help' for commands, 'exit' to close.", self._default_output_color)
+        self._show_prompt()
 
-        self._append("INFO", "synarius_parawiz.console", "console started")
+    def _show_prompt(self) -> None:
+        self._console.show_prompt(f"{self._prompt_provider()}> ", DEFAULT_PROMPT_COLOR)
+
+    def _insert_log(self, text: str, color: str) -> None:
+        self._console.insert_log_before_current_prompt(text, color)
+
+    def append_protocol_command(self, cmd: str) -> None:
+        self._insert_log(f"{self._prompt_provider()}> {cmd.strip()}", DEFAULT_PROMPT_COLOR)
+
+    def append_protocol_result(self, result: str) -> None:
+        rs = str(result)
+        if len(rs) > _MAX_REPL_OUTPUT_CHARS:
+            rs = rs[:_MAX_REPL_OUTPUT_CHARS] + f"\n... [truncated, result was {len(str(result))} chars]"
+        self._insert_log(rs, self._default_output_color)
+
+    def append_protocol_error(self, error: str) -> None:
+        self._insert_log(f"error: {error}", DEFAULT_ERROR_COLOR)
+
+    def append_repl_result(self, result: str) -> None:
+        rs = str(result)
+        if len(rs) > _MAX_REPL_OUTPUT_CHARS:
+            rs = rs[:_MAX_REPL_OUTPUT_CHARS] + f"\n... [truncated, result was {len(str(result))} chars]"
+        self._console.append_output(rs, self._default_output_color)
+
+    def append_repl_error(self, error: str) -> None:
+        self._console.append_output(f"error: {error}", DEFAULT_ERROR_COLOR)
 
     def append_parawiz_ccp(self, cmd: str, result: str | None = None, error: str | None = None) -> None:
-        """Protokolliert CCP-Zeilen aus ParaWiz (z. B. nach Apply im Kennfeld), analog zum REPL."""
-        self._append("INFO", "synarius_parawiz.ccp", f"command [parawiz]: {cmd}")
+        """Backward-compatible shim for existing callers."""
+        self.append_protocol_command(cmd)
         if error:
-            self._append("ERROR", "synarius_parawiz.ccp", error)
+            self.append_protocol_error(error)
         elif result is not None:
-            if len(cmd) > 240:
-                self._append("INFO", "synarius_parawiz.ccp", f"command [parawiz] ok -> {result}")
-            else:
-                self._append("INFO", "synarius_parawiz.ccp", f"command [parawiz] ok: {cmd} -> {result}")
+            self.append_protocol_result(str(result))
 
-    def _now(self) -> str:
-        return datetime.now().strftime("%H:%M:%S")
-
-    def _append(self, level: str, logger: str, message: str) -> None:
-        self._log.appendPlainText(f"{self._now()} {level:<5} {logger} | {message}")
-        self._log.verticalScrollBar().setValue(self._log.verticalScrollBar().maximum())
-
-    def _execute_current(self) -> None:
-        cmd = self._cmd.text().strip()
-        if not cmd:
+    def _history_prev(self) -> None:
+        if not self._history:
             return
-        self._cmd.clear()
-        self._append("INFO", "synarius_parawiz.console", f"command [repl]: {cmd}")
+        self._history_idx = max(0, self._history_idx - 1)
+        self._console.replace_current_input(self._history[self._history_idx])
+
+    def _history_next(self) -> None:
+        if not self._history:
+            return
+        self._history_idx = min(len(self._history), self._history_idx + 1)
+        if self._history_idx >= len(self._history):
+            self._console.replace_current_input("")
+            return
+        self._console.replace_current_input(self._history[self._history_idx])
+
+    def _on_submit(self, line: str) -> None:
+        cmd = line.strip()
+        if not cmd:
+            self._show_prompt()
+            return
+
+        self._history.append(line)
+        self._history_idx = len(self._history)
+
+        if cmd in {"exit", "quit"}:
+            self.close()
+            return
+        if cmd == "help":
+            self._console.append_output("Built-in commands:", self._default_output_color)
+            self._console.append_output("  help                    Show this help", self._default_output_color)
+            self._console.append_output("  exit | quit             Close CLI window", self._default_output_color)
+            self._console.append_output(
+                "  load <file.syn>         Load command-stack script",
+                self._default_output_color,
+            )
+            self._console.append_output("", self._default_output_color)
+            self._console.append_output("Protocol commands:", self._default_output_color)
+            self._console.append_output(
+                "  ls, lsattr [-l], cd <path>, new ..., select ... (-p append, -m remove), "
+                "set ..., get ..., del ... | del @selected",
+                self._default_output_color,
+            )
+            self._show_prompt()
+            return
+
         try:
-            out = self._controller.execute(cmd)
-            suffix = f" -> {out}" if out else ""
-            self._append("INFO", "synarius_parawiz.console", f"command [repl] ok: {cmd}{suffix}")
-            self._on_command_executed()
-        except CommandError as exc:
-            self._append("ERROR", "synarius_parawiz.console", str(exc))
-        except Exception as exc:
-            self._append("ERROR", "synarius_parawiz.console", str(exc))
+            self._on_execute_line(cmd, "repl")
+            self._on_command_executed(cmd)
+        except (CommandError, Exception):
+            # Errors are rendered by the shared execute/logging path.
+            pass
+        self._show_prompt()
 
     def show_and_raise(self) -> None:
         self.show()

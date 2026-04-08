@@ -10,3 +10,4 @@ Synarius Apps documentation
    :maxdepth: 2
 
    requirements/index
+   developer/diagnostics

@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 import types
-import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
@@ -24,8 +22,8 @@ from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QAction,
     QBrush,
-    QColor,
     QCloseEvent,
+    QColor,
     QFont,
     QIcon,
     QPainter,
@@ -53,9 +51,9 @@ from PySide6.QtWidgets import (
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
-    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QToolBar,
     QToolButton,
     QVBoxLayout,
@@ -136,6 +134,63 @@ def build_calibration_metadata_scroll_area(
     return scroll
 
 
+def _build_scalar_calibration_form_metadata_host(
+    parent: QWidget,
+    data: CalibrationMapData,
+    *,
+    read_only: bool,
+) -> tuple[QWidget, QLineEdit | None]:
+    """Wie Skalar-Doppelklick-Dialog: Formular + Trennlinie + Metadaten-Scrollbereich."""
+    vals0 = np.asarray(data.values, dtype=np.float64)
+    if vals0.ndim != 0:
+        raise ValueError("scalar inspector expects 0-d values")
+    host = QWidget(parent)
+    lay = QVBoxLayout(host)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(10)
+    form = QFormLayout()
+    form.addRow("Parameter:", QLabel(data.title))
+    vlabel = data.value_label()
+    if (vlabel or "").strip():
+        form.addRow("Field:", QLabel(vlabel))
+    if (data.unit or "").strip():
+        form.addRow("Unit:", QLabel(data.unit))
+    cur = f"{float(vals0.item()):g}"
+    edit: QLineEdit | None
+    if read_only:
+        val_lbl = QLabel(cur)
+        val_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        form.addRow("Value:", val_lbl)
+        edit = None
+    else:
+        le = QLineEdit(cur)
+        le.setClearButtonEnabled(True)
+        form.addRow("Value:", le)
+        edit = le
+    lay.addLayout(form)
+    sep = QFrame(parent)
+    sep.setFrameShape(QFrame.Shape.HLine)
+    sep.setFrameShadow(QFrame.Shadow.Sunken)
+    lay.addWidget(sep)
+    meta_heading = QLabel("Metadata")
+    _mh_font = QFont()
+    _mh_font.setBold(True)
+    meta_heading.setFont(_mh_font)
+    lay.addWidget(meta_heading)
+    lay.addWidget(build_calibration_metadata_scroll_area(parent, data, min_h=200), 1)
+    return host, edit
+
+
+def build_scalar_calibration_readonly_widget(
+    parent: QWidget | None,
+    data: CalibrationMapData,
+) -> QWidget:
+    """Read-only Inhalt wie beim Skalar-Doppelklick (ohne Schaltflächen); für Tab-Vergleich."""
+    host_parent = parent if parent is not None else QWidget()
+    inner, _ = _build_scalar_calibration_form_metadata_host(host_parent, data, read_only=True)
+    return inner
+
+
 def exec_scalar_calibration_edit_dialog(
     parent: QWidget | None,
     data: CalibrationMapData,
@@ -162,28 +217,10 @@ def exec_scalar_calibration_edit_dialog(
     root = QVBoxLayout(dlg)
     root.setContentsMargins(12, 12, 12, 12)
     root.setSpacing(10)
-    form = QFormLayout()
-    form.addRow("Parameter:", QLabel(data.title))
-    vlabel = data.value_label()
-    if (vlabel or "").strip():
-        form.addRow("Field:", QLabel(vlabel))
-    if (data.unit or "").strip():
-        form.addRow("Unit:", QLabel(data.unit))
-    cur = f"{float(vals0.item()):g}"
-    edit = QLineEdit(cur)
-    edit.setClearButtonEnabled(True)
-    form.addRow("Value:", edit)
-    root.addLayout(form)
-    sep = QFrame(dlg)
-    sep.setFrameShape(QFrame.Shape.HLine)
-    sep.setFrameShadow(QFrame.Shadow.Sunken)
-    root.addWidget(sep)
-    meta_heading = QLabel("Metadata")
-    _mh_font = QFont()
-    _mh_font.setBold(True)
-    meta_heading.setFont(_mh_font)
-    root.addWidget(meta_heading)
-    root.addWidget(build_calibration_metadata_scroll_area(dlg, data, min_h=200), 1)
+    body, edit = _build_scalar_calibration_form_metadata_host(dlg, data, read_only=False)
+    if edit is None:
+        return None
+    root.addWidget(body, 1)
     btns = QDialogButtonBox(
         QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
     )
@@ -303,27 +340,6 @@ _SUPPORT_SCATTER3D_OPTS = opts.Scatter3D(
 )
 
 _DIRTY_FOREGROUND = QColor(0, 70, 190)
-# #region agent log
-_AGENT_DEBUG_LOG = Path(__file__).resolve().parents[5] / "debug-85e82c.log"
-
-
-def _calmap_agent_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    try:
-        payload = {
-            "sessionId": "85e82c",
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with open(_AGENT_DEBUG_LOG, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-
-
-# #endregion
 _BASELINE_CURVE_COLOR = "#9a9a9a"
 _BASELINE_SCATTER_COLOR = "#5c5c5c"
 _BASELINE_SCATTER_EDGE = "#d8d8d8"
@@ -424,6 +440,31 @@ def _apply_3d_initial_zoom_like_wheel(ax: Axes3D, n_ticks: int) -> None:
     ax._dist = max(_3D_DIST_MIN, min(_3D_DIST_MAX, float(ax._dist) / factor))
 
 
+def _snapshot_axes3d_view(ax: Axes3D) -> tuple[float, float, float, float, str]:
+    """Aktuelle 3D-Perspektive für Wiederherstellung nach Neuzeichnen (Apply / Daten-Update)."""
+    vertical_axis = ax._axis_names[ax._vertical_axis]
+    return (
+        float(ax.elev),
+        float(ax.azim),
+        float(ax.roll),
+        float(ax._dist),
+        vertical_axis,
+    )
+
+
+def _restore_axes3d_view(ax: Axes3D, snap: tuple[float, float, float, float, str]) -> None:
+    """Nach ``_patch_axes3d_preserve_dist`` aufrufen: gleiche Kamera wie vor dem Cleanup."""
+    elev, azim, roll, dist, vertical_axis = snap
+    ax._dist = max(_3D_DIST_MIN, min(_3D_DIST_MAX, float(dist)))
+    ax.view_init(
+        elev=elev,
+        azim=azim,
+        roll=roll,
+        vertical_axis=vertical_axis,
+        share=True,
+    )
+
+
 def _relax_3d_plot_clipping(fig: Figure) -> None:
     """Ohne das clippt Matplotlib 3D an der Achsen-Bounding-Box — starkes Reinzoomen schneidet die Fläche ab."""
     for ax in fig.axes:
@@ -455,7 +496,8 @@ def _mpl_or_qt_ctrl_down(event: object) -> bool:
 def _synarius_3d_full_rotation_requested(event: object, *, turntable_lock: bool) -> bool:
     """Argument ``full_rotation`` für :func:`_apply_synarius_3d_rotation_delta`.
 
-    ``turntable_lock`` True: wie der Kennfeld-Bearbeitungsplot — ohne Strg nur Azimut (Turntable), mit Strg volle Neigung.
+    ``turntable_lock`` True: wie der Kennfeld-Bearbeitungsplot — ohne Strg nur Azimut
+    (Turntable), mit Strg volle Neigung.
     False: immer freie 3D-Rotation (optional, z. B. Kenngrößen-Vergleich).
     """
     if turntable_lock:
@@ -646,10 +688,16 @@ class CalibrationMapWidget(QWidget):
         self._tb_spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._toolbar.addWidget(self._tb_spacer)
         self._wa_apply = self._make_commit_toolbar_button(
-            "Apply", self._on_apply_edits, "SynariusToolbarCommitApply", "Commit edited values to the working copy (session)"
+            "Apply",
+            self._on_apply_edits,
+            "SynariusToolbarCommitApply",
+            "Commit edited values to the working copy (session)",
         )
         self._wa_discard = self._make_commit_toolbar_button(
-            "Discard", self._on_discard_edits, "SynariusToolbarCommitDiscard", "Revert all edits to the last applied state"
+            "Discard",
+            self._on_discard_edits,
+            "SynariusToolbarCommitDiscard",
+            "Revert all edits to the last applied state",
         )
         self._wa_apply.setVisible(False)
         self._wa_discard.setVisible(False)
@@ -750,32 +798,6 @@ class CalibrationMapWidget(QWidget):
         btn.setStyleSheet(studio_commit_toolbutton_widget_stylesheet())
         btn.clicked.connect(slot)
         wa.setDefaultWidget(btn)
-        # #region agent log
-        try:
-            _p = Path(__file__).resolve().parents[5] / "debug-85e82c.log"
-            with _p.open("a", encoding="utf-8") as _f:
-                _f.write(
-                    json.dumps(
-                        {
-                            "sessionId": "85e82c",
-                            "hypothesisId": "H1",
-                            "location": "calmapwidget/widget.py:_make_commit_toolbar_button",
-                            "message": "commit_btn_stylesheet",
-                            "data": {
-                                "objectName": object_name,
-                                "ss_len": len(btn.styleSheet() or ""),
-                                "wa_styled_bg": bool(
-                                    btn.testAttribute(Qt.WidgetAttribute.WA_StyledBackground)
-                                ),
-                            },
-                            "timestamp": int(time.time() * 1000),
-                        }
-                    )
-                    + "\n"
-                )
-        except Exception:
-            pass
-        # #endregion
         return wa
 
     def _table_h_scroll_extra_height(self) -> int:
@@ -942,7 +964,8 @@ class CalibrationMapWidget(QWidget):
                 self._table.setMaximumSize(16777215, th)
             else:
                 self._table.setMaximumSize(16777215, 16777215)
-            # Mit sichtbarem Plot: vertikal nur Preferred — sonst teilt sich die VBox die Höhe 1:1 (leere Fläche unter der Tabelle).
+            # Mit sichtbarem Plot: vertikal nur Preferred — sonst teilt sich die VBox die Höhe
+            # 1:1 (leere Fläche unter der Tabelle).
             vpol = (
                 QSizePolicy.Policy.Preferred
                 if self._plot_visible
@@ -1087,7 +1110,8 @@ class CalibrationMapWidget(QWidget):
                 dly.activate()
             req = self.minimumSizeHint()
             if req.width() >= 1 and req.height() >= 1:
-                # Immer an den aktuellen Inhalt koppeln — sonst bleibt nach Einklappen des Plots eine zu große Mindesthöhe.
+                # Immer an den aktuellen Inhalt koppeln — sonst bleibt nach Einklappen des Plots
+                # eine zu große Mindesthöhe.
                 win.setMinimumSize(req.width(), req.height())
             if shrink_window_to_content:
                 sz = self.sizeHint()
@@ -1137,7 +1161,10 @@ class CalibrationMapWidget(QWidget):
         return QSize(max(1, w), max(1, h))
 
     def _compute_minimum_outer_size(self) -> QSize:
-        """Mindestmaße ohne volle Plot-Höhe — erlaubt vertikales Schrumpfen; Plot skaliert in :meth:`_sync_plot_scroll_outer_size`."""
+        """Mindestmaße ohne volle Plot-Höhe — erlaubt vertikales Schrumpfen.
+
+        Plot skaliert in :meth:`_sync_plot_scroll_outer_size`.
+        """
         tb = self._toolbar
         w = max(1, tb.sizeHint().width())
         h = tb.height() if tb.height() > 0 else tb.sizeHint().height()
@@ -1312,38 +1339,6 @@ class CalibrationMapWidget(QWidget):
         self._wa_apply.setVisible(show)
         self._wa_discard.setVisible(show)
         self._apply_outer_geometry()
-        # #region agent log
-        if show:
-            try:
-                _ba = self._wa_apply.defaultWidget()
-                _bd = self._wa_discard.defaultWidget()
-                _p = Path(__file__).resolve().parents[5] / "debug-85e82c.log"
-                _snap = {}
-                for _w in (_ba, _bd):
-                    if isinstance(_w, QToolButton):
-                        _snap[_w.objectName() or "?"] = {
-                            "checkable": _w.isCheckable(),
-                            "checked": _w.isChecked(),
-                            "underMouse": _w.underMouse(),
-                            "ss_len": len(_w.styleSheet() or ""),
-                        }
-                with _p.open("a", encoding="utf-8") as _f:
-                    _f.write(
-                        json.dumps(
-                            {
-                                "sessionId": "85e82c",
-                                "hypothesisId": "H2",
-                                "location": "calmapwidget/widget.py:_update_pending_toolbar",
-                                "message": "commit_btn_visible_state",
-                                "data": _snap,
-                                "timestamp": int(time.time() * 1000),
-                            }
-                        )
-                        + "\n"
-                    )
-            except Exception:
-                pass
-        # #endregion
 
     def _draft_axis_values(self, axis_idx: int) -> np.ndarray:
         v = np.asarray(self._draft_values, dtype=np.float64)
@@ -1820,23 +1815,6 @@ class CalibrationMapWidget(QWidget):
                 self._style_data_cell(it, vj, (vmin, vmax), _float_cell_dirty(vj, float(self._baseline_values[j])))
                 self._table.setItem(1, j + 1, it)
             self._graph_plot_active = True
-            # #region agent log
-            _it = self._table.item(1, 1)
-            if _it is not None:
-                _b = _it.background()
-                _c = _b.color()
-                _calmap_agent_log(
-                    "A",
-                    "widget._build_table:1d",
-                    "after style before matrix_sizing",
-                    {
-                        "vmin": vmin,
-                        "vmax": vmax,
-                        "bg_style": getattr(_b.style(), "value", str(_b.style())),
-                        "bg_rgb": [_c.red(), _c.green(), _c.blue()] if _c.isValid() else None,
-                    },
-                )
-            # #endregion
             self._apply_matrix_table_sizing()
             self._apply_outer_geometry()
             self._update_pending_toolbar()
@@ -1878,23 +1856,6 @@ class CalibrationMapWidget(QWidget):
                     )
                     self._table.setItem(i + 1, j + 1, it)
             self._graph_plot_active = True
-            # #region agent log
-            _it = self._table.item(1, 1)
-            if _it is not None:
-                _b = _it.background()
-                _c = _b.color()
-                _calmap_agent_log(
-                    "A",
-                    "widget._build_table:2d",
-                    "after style before matrix_sizing",
-                    {
-                        "vmin": vmin,
-                        "vmax": vmax,
-                        "bg_style": getattr(_b.style(), "value", str(_b.style())),
-                        "bg_rgb": [_c.red(), _c.green(), _c.blue()] if _c.isValid() else None,
-                    },
-                )
-            # #endregion
             self._apply_matrix_table_sizing()
             self._apply_outer_geometry()
             self._update_pending_toolbar()
@@ -1930,21 +1891,6 @@ class CalibrationMapWidget(QWidget):
                 it = self._table.item(r, c)
                 if it is not None:
                     it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        # #region agent log
-        _it2 = self._table.item(1, 1)
-        if _it2 is not None:
-            _b2 = _it2.background()
-            _c2 = _b2.color()
-            _calmap_agent_log(
-                "B",
-                "widget._apply_matrix_table_sizing",
-                "after align loop",
-                {
-                    "bg_style": getattr(_b2.style(), "value", str(_b2.style())),
-                    "bg_rgb": [_c2.red(), _c2.green(), _c2.blue()] if _c2.isValid() else None,
-                },
-            )
-        # #endregion
 
     def _apply_labeled_table_sizing(self) -> None:
         self._table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
@@ -2126,6 +2072,18 @@ class CalibrationMapWidget(QWidget):
             self._canvas.draw_idle()
             return
 
+        saved_3d_view: tuple[float, float, float, float, str] | None = None
+        if vals.ndim == 2:
+            old_fig = self._canvas.figure
+            if old_fig is not None:
+                for old_ax in old_fig.axes:
+                    if isinstance(old_ax, Axes3D):
+                        try:
+                            saved_3d_view = _snapshot_axes3d_view(old_ax)
+                        except Exception:
+                            saved_3d_view = None
+                        break
+
         self._plot_rendered = False
         self._cleanup_hv_plot()
         element = self._build_holoviews_element()
@@ -2149,7 +2107,10 @@ class CalibrationMapWidget(QWidget):
             for ax in fig.axes:
                 if isinstance(ax, Axes3D):
                     _patch_axes3d_preserve_dist(ax)
-                    _apply_3d_initial_zoom_like_wheel(ax, _3D_INITIAL_WHEEL_ZOOM_TICKS)
+                    if saved_3d_view is not None:
+                        _restore_axes3d_view(ax, saved_3d_view)
+                    else:
+                        _apply_3d_initial_zoom_like_wheel(ax, _3D_INITIAL_WHEEL_ZOOM_TICKS)
                 if hasattr(ax, "set_navigate_mode"):
                     ax.set_navigate_mode(None)
             self._canvas.draw()
@@ -2235,7 +2196,7 @@ class CalibrationMapWidget(QWidget):
 
 
 class CalibrationMapCompareWidget(QWidget):
-    """Read-only comparison of two 2D calibration maps."""
+    """Read-only comparison of two numeric calibration payloads (1D or 2D)."""
 
     def __init__(
         self,
@@ -2369,17 +2330,24 @@ class CalibrationMapCompareWidget(QWidget):
         lbl.raise_()
 
     @staticmethod
-    def _axis_and_values_2d(data: CalibrationMapData) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _axis_and_values_for_compare(
+        data: CalibrationMapData,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         vals = np.asarray(data.values, dtype=np.float64)
-        if vals.ndim != 2:
-            return np.array([], dtype=np.float64), np.array([], dtype=np.float64), vals
-        ay = data.axis_values(0)
-        ax = data.axis_values(1)
-        if len(ay) != int(vals.shape[0]):
-            ay = np.arange(int(vals.shape[0]), dtype=np.float64)
-        if len(ax) != int(vals.shape[1]):
-            ax = np.arange(int(vals.shape[1]), dtype=np.float64)
-        return ay, ax, vals
+        if vals.ndim == 1:
+            ax = data.axis_values(0)
+            if len(ax) != int(vals.shape[0]):
+                ax = np.arange(int(vals.shape[0]), dtype=np.float64)
+            return ax, np.array([], dtype=np.float64), vals
+        if vals.ndim == 2:
+            ay = data.axis_values(0)
+            ax = data.axis_values(1)
+            if len(ay) != int(vals.shape[0]):
+                ay = np.arange(int(vals.shape[0]), dtype=np.float64)
+            if len(ax) != int(vals.shape[1]):
+                ax = np.arange(int(vals.shape[1]), dtype=np.float64)
+            return ay, ax, vals
+        return np.array([], dtype=np.float64), np.array([], dtype=np.float64), vals
 
     def _compare_table_intrinsic_wh(self, table: QTableWidget) -> tuple[int, int]:
         """Pixelgröße aus Zeilen-/Spaltenmaßen (Header ausgeblendet)."""
@@ -2409,17 +2377,59 @@ class CalibrationMapCompareWidget(QWidget):
             table.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             title.setMaximumWidth(fw)
 
+    def compare_tables_row_content_width(self) -> int:
+        """Breite der Tabellenzeile inkl. Ränder und Abstand (wie nach _apply_compare_tables_viewport_size)."""
+        lay = self._tables_row.layout()
+        if not isinstance(lay, QHBoxLayout):
+            return 400
+        m = lay.contentsMargins()
+        sp = lay.spacing()
+        min_w = _TABLE_MATRIX_COL_W * _PLOT_EXPAND_WIDTH_MATRIX_COLS + _TABLE_FRAME_PAD
+
+        def _fw(table: QTableWidget) -> int:
+            iw, _ = self._compare_table_intrinsic_wh(table)
+            return max(iw, min_w)
+
+        return m.left() + m.right() + sp + _fw(self._left_table) + _fw(self._right_table)
+
+    def sizeHint(self) -> QSize:
+        sh = super().sizeHint()
+        w = max(self.compare_tables_row_content_width(), self._toolbar.sizeHint().width())
+        return QSize(w, max(sh.height(), 480))
+
+    def minimumSizeHint(self) -> QSize:
+        sh = super().minimumSizeHint()
+        w = max(self.compare_tables_row_content_width(), self._toolbar.sizeHint().width())
+        return QSize(w, max(sh.height(), 200))
+
     def _build_compare_view(self) -> None:
-        ay_l, ax_l, vals_l = self._axis_and_values_2d(self._left_data)
-        ay_r, ax_r, vals_r = self._axis_and_values_2d(self._right_data)
-        if vals_l.ndim != 2 or vals_r.ndim != 2:
+        ay_l, ax_l, vals_l = self._axis_and_values_for_compare(self._left_data)
+        ay_r, ax_r, vals_r = self._axis_and_values_for_compare(self._right_data)
+        if vals_l.ndim not in (1, 2) or vals_r.ndim not in (1, 2) or vals_l.ndim != vals_r.ndim:
             msg_w = max(_TABLE_MATRIX_COL_W * _PLOT_EXPAND_WIDTH_MATRIX_COLS, 400)
             for tw in (self._left_table, self._right_table):
                 tw.setRowCount(1)
                 tw.setColumnCount(1)
-                tw.setItem(0, 0, QTableWidgetItem("Comparison requires two 2D maps."))
+                tw.setItem(0, 0, QTableWidgetItem("Comparison requires two 1D curves or two 2D maps."))
                 tw.setRowHeight(0, _TABLE_MATRIX_ROW_H * 2)
                 tw.setColumnWidth(0, msg_w)
+            self._apply_compare_tables_viewport_size()
+            self._draw_plot(ay_l, ax_l, vals_l, ay_r, ax_r, vals_r)
+            return
+
+        if vals_l.ndim == 1:
+            n_l = int(vals_l.shape[0])
+            n_r = int(vals_r.shape[0])
+            max_n = max(n_l, n_r)
+            axis_diff = np.ones(max_n, dtype=bool)
+            val_diff = np.ones(max_n, dtype=bool)
+            min_n = min(n_l, n_r)
+            if min_n > 0:
+                axis_diff[:min_n] = [_float_cell_dirty(float(ay_l[j]), float(ay_r[j])) for j in range(min_n)]
+                val_diff[:min_n] = [_float_cell_dirty(float(vals_l[j]), float(vals_r[j])) for j in range(min_n)]
+            self._build_single_compare_table_1d(self._left_table, self._left_data, ay_l, vals_l, axis_diff, val_diff)
+            self._build_single_compare_table_1d(self._right_table, self._right_data, ay_r, vals_r, axis_diff, val_diff)
+            self._plot_payload = (ay_l, ax_l, vals_l, ay_r, ax_r, vals_r)
             self._apply_compare_tables_viewport_size()
             self._draw_plot(ay_l, ax_l, vals_l, ay_r, ax_r, vals_r)
             return
@@ -2543,6 +2553,62 @@ class CalibrationMapCompareWidget(QWidget):
         f.setBold(bool(is_diff))
         item.setFont(f)
 
+    def _build_single_compare_table_1d(
+        self,
+        table: QTableWidget,
+        data: CalibrationMapData,
+        ax: np.ndarray,
+        vals: np.ndarray,
+        axis_diff: np.ndarray,
+        val_diff: np.ndarray,
+    ) -> None:
+        n = int(vals.shape[0])
+        axis0_label = data.axis_label(0, "x")
+        value_label = data.value_label()
+        table.setRowCount(2)
+        table.setColumnCount(n + 1)
+        fl = Qt.ItemFlag.ItemIsEnabled
+        fn = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+
+        it_ax = QTableWidgetItem(axis0_label)
+        it_ax.setFlags(fl)
+        table.setItem(0, 0, it_ax)
+        it_vl = QTableWidgetItem(value_label)
+        it_vl.setFlags(fl)
+        table.setItem(1, 0, it_vl)
+
+        vflat = np.asarray(vals, dtype=np.float64).ravel()
+        finite = vflat[np.isfinite(vflat)]
+        if finite.size == 0:
+            vmin, vmax = 0.0, 1.0
+        else:
+            vmin, vmax = float(np.min(finite)), float(np.max(finite))
+
+        for j in range(n):
+            itx = QTableWidgetItem(f"{float(ax[j]):g}")
+            itx.setFlags(fn)
+            self._apply_compare_bold(itx, bool(axis_diff[j]) if j < len(axis_diff) else True)
+            table.setItem(0, j + 1, itx)
+
+            v = float(vals[j])
+            it = QTableWidgetItem(f"{v:g}")
+            it.setFlags(fn)
+            bg, fg = _heatmap_qcolor(v, vmin, vmax, self._left_cmap if table is self._left_table else self._right_cmap)
+            it.setBackground(bg)
+            it.setForeground(fg)
+            self._apply_compare_bold(it, bool(val_diff[j]) if j < len(val_diff) else True)
+            table.setItem(1, j + 1, it)
+
+        for r in range(table.rowCount()):
+            table.setRowHeight(r, _TABLE_MATRIX_ROW_H)
+        for c in range(table.columnCount()):
+            table.setColumnWidth(c, _TABLE_MATRIX_COL_W)
+        for r in range(table.rowCount()):
+            for c in range(table.columnCount()):
+                it = table.item(r, c)
+                if it is not None:
+                    it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+
     def _build_single_compare_table(
         self,
         table: QTableWidget,
@@ -2591,7 +2657,11 @@ class CalibrationMapCompareWidget(QWidget):
                 bg, fg = _heatmap_qcolor(v, vmin, vmax, cmap)
                 it.setBackground(bg)
                 it.setForeground(fg)
-                self._apply_compare_bold(it, bool(val_diff[i, j]) if (i < val_diff.shape[0] and j < val_diff.shape[1]) else True)
+                in_bounds = i < val_diff.shape[0] and j < val_diff.shape[1]
+                self._apply_compare_bold(
+                    it,
+                    bool(val_diff[i, j]) if in_bounds else True,
+                )
                 table.setItem(i + 1, j + 1, it)
 
         for r in range(table.rowCount()):
@@ -2616,6 +2686,37 @@ class CalibrationMapCompareWidget(QWidget):
         fig = self._figure
         self._disconnect_compare_rotation_callbacks()
         fig.clear()
+        if vals_l.ndim == 1 and vals_r.ndim == 1:
+            self._set_rotation_hint_visible(False)
+            ax = fig.add_subplot(111)
+            if vals_l.size > 0:
+                ax.plot(
+                    ay_l,
+                    vals_l,
+                    color=self._left_cmap(0.75),
+                    linewidth=2.0,
+                    marker="o",
+                    markersize=4.0,
+                    label=self._left_title,
+                )
+            if vals_r.size > 0:
+                ax.plot(
+                    ay_r,
+                    vals_r,
+                    color=self._right_cmap(0.75),
+                    linewidth=2.0,
+                    marker="o",
+                    markersize=4.0,
+                    label=self._right_title,
+                )
+            ax.set_xlabel(self._left_data.axis_label(0, "x"))
+            ax.set_ylabel(self._left_data.value_label())
+            ax.grid(True, alpha=0.35)
+            ax.legend(loc="best")
+            ax.set_title(f"{self._left_data.title} vs {self._right_data.title}")
+            self._canvas.draw()
+            self._canvas.draw_idle()
+            return
         try:
             # Manual colorbar axes for two side-by-side legends.
             fig.set_layout_engine(None)
@@ -2817,7 +2918,7 @@ def create_calibration_map_compare_viewer(
     left_title: str = "A",
     right_title: str = "B",
 ) -> CalibrationMapCompareShell | CalibrationMapCompareWidget:
-    """Return read-only comparison viewer for two calibration maps."""
+    """Return read-only comparison viewer for two calibration curves/maps."""
     if embedded:
         return CalibrationMapCompareShell(
             left_data, right_data, parent, left_title=left_title, right_title=right_title

@@ -31,11 +31,30 @@ STUDIO_TOOLBAR_ACTION_PRESSED = _rgb_hex_scale(STUDIO_TOOLBAR_ACTIVE_ACTION_BACK
 
 SELECTION_HIGHLIGHT = STUDIO_TOOLBAR_ACTIVE_ACTION_BACKGROUND
 
+# ParaWiz: CCP ``select`` / Modell-Selektion (nur Overlay, nicht Qt-Selection).
+PARAWIZ_PARAMETER_SELECTION_BACKGROUND = "#8b5cf6"
+PARAWIZ_PARAMETER_SELECTION_FOREGROUND = "#ffffff"
+# ParaWiz: Qt-Zeilen-/Gummibandauswahl → Kopieren in die Zwischenablage (unabhängig vom Modell-``select``).
+PARAWIZ_CLIPBOARD_SELECTION_BACKGROUND = STUDIO_TOOLBAR_ACTIVE_ACTION_BACKGROUND
+PARAWIZ_CLIPBOARD_SELECTION_FOREGROUND = "#ffffff"
+
 
 def selection_highlight_qcolor(*, opaque: bool = True) -> QColor:
     c = QColor(SELECTION_HIGHLIGHT)
     c.setAlpha(255 if opaque else 142)
     return c
+
+
+def studio_tooltip_stylesheet() -> str:
+    """Same tooltip chrome as Synarius Studio toolbars."""
+    return (
+        "QToolTip {"
+        " color: #ffffff;"
+        " background-color: #2b2b2b;"
+        " border: 1px solid #5a5a5a;"
+        " padding: 4px 6px;"
+        " }"
+    )
 
 
 def studio_toolbar_stylesheet() -> str:
@@ -50,17 +69,19 @@ def studio_toolbar_stylesheet() -> str:
     return (
         f"QToolBar {{ background-color: {bg}; border: none; padding: 3px; spacing: 4px; }}"
         f"QToolBar QLabel {{ color: {fg}; }}"
-        f"QToolBar QToolButton {{ background-color: {bg}; border: none; border-radius: 4px; padding: 4px; }}"
+        f"QToolBar QToolButton {{ background-color: {bg}; color: {fg}; "
+        f"border: none; border-radius: 4px; padding: 4px; }}"
         f"QToolBar QToolButton:hover {{ background-color: {tb_hover}; }}"
         f"QToolBar QToolButton:pressed {{ background-color: {tb_pressed}; }}"
         f"QToolBar QToolButton:checked {{ background-color: {action_checked}; }}"
+        f"QToolBar QToolButton:checked:hover {{ background-color: {action_checked}; }}"
         f"QToolBar QComboBox {{ color: {fg}; background-color: {combo_bg}; border: 1px solid {bdr};"
         f" border-radius: 3px; padding: 2px 8px; min-height: 20px; }}"
         f"QToolBar QComboBox:hover {{ background-color: {combo_hover}; }}"
         f"QToolBar QComboBox::drop-down {{ border: none; width: 18px; }}"
         f"QToolBar QComboBox QAbstractItemView {{ background-color: {combo_bg}; color: {fg}; }}"
         f"QToolBar QLineEdit {{ color: {fg}; background-color: transparent; border: none; }}"
-    )
+    ) + studio_tooltip_stylesheet()
 
 
 def _scoped_channel_grid_table_qss(scope: str) -> str:
@@ -97,12 +118,14 @@ def _scoped_channel_grid_table_qss(scope: str) -> str:
         f"{scope} QScrollBar:vertical {{ background: #2f2f2f; width: 12px; margin: 0; border: none; }}"
         f"{scope} QScrollBar::handle:vertical {{ background: #5a5a5a; min-height: 20px; border-radius: 4px; }}"
         f"{scope} QScrollBar::handle:vertical:hover {{ background: #6a6a6a; }}"
-        f"{scope} QScrollBar::add-line:vertical, {scope} QScrollBar::sub-line:vertical {{ height: 0; border: none; background: none; }}"
+        f"{scope} QScrollBar::add-line:vertical, {scope} QScrollBar::sub-line:vertical "
+        f"{{ height: 0; border: none; background: none; }}"
         f"{scope} QScrollBar::add-page:vertical, {scope} QScrollBar::sub-page:vertical {{ background: #2f2f2f; }}"
         f"{scope} QScrollBar:horizontal {{ background: #2f2f2f; height: 12px; margin: 0; border: none; }}"
         f"{scope} QScrollBar::handle:horizontal {{ background: #5a5a5a; min-width: 20px; border-radius: 4px; }}"
         f"{scope} QScrollBar::handle:horizontal:hover {{ background: #6a6a6a; }}"
-        f"{scope} QScrollBar::add-line:horizontal, {scope} QScrollBar::sub-line:horizontal {{ width: 0; border: none; background: none; }}"
+        f"{scope} QScrollBar::add-line:horizontal, {scope} QScrollBar::sub-line:horizontal "
+        f"{{ width: 0; border: none; background: none; }}"
         f"{scope} QScrollBar::add-page:horizontal, {scope} QScrollBar::sub-page:horizontal {{ background: #2f2f2f; }}"
     )
 

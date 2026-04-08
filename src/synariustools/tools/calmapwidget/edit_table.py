@@ -2,49 +2,11 @@
 
 from __future__ import annotations
 
-import json
-import time
-from pathlib import Path
 from typing import Protocol
 
 from PySide6.QtCore import QItemSelectionModel, QPoint, Qt
 from PySide6.QtGui import QFontMetrics, QKeyEvent, QWheelEvent
 from PySide6.QtWidgets import QAbstractItemView, QStyle, QStyleOptionViewItem, QTableWidget, QTableWidgetItem
-
-# #region agent log
-_EDIT_AGENT_LOG = Path(__file__).resolve().parents[5] / "debug-85e82c.log"
-
-
-def _edit_agent_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    try:
-        payload = {
-            "sessionId": "85e82c",
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with open(_EDIT_AGENT_LOG, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-
-
-def _qt_int_for_log(v: object) -> int:
-    """Qt Key / KeyboardModifiers: PySide6 kann Enum/QFlags liefern — nicht immer ``int(v)``."""
-    if isinstance(v, int):
-        return v
-    u = getattr(v, "value", v)
-    if isinstance(u, int):
-        return u
-    try:
-        return int(u)
-    except (TypeError, ValueError):
-        return -1
-
-
-# #endregion
 
 # Tastatur layout-unabhängig: erzeugtes Zeichen (z. B. DE: Shift+0 → "="), nicht nur Qt.Key_*.
 _BULK_OP_BY_TEXT: dict[str, str] = {
@@ -87,19 +49,6 @@ class EditableCalmapTable(QTableWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.cellDoubleClicked.connect(self._on_cell_double_clicked)
-        # #region agent log
-        _dd, _sm, _sb = self.dragDropMode(), self.selectionMode(), self.selectionBehavior()
-        _edit_agent_log(
-            "D",
-            "edit_table.__init__",
-            "table config",
-            {
-                "dragDropMode": getattr(_dd, "value", str(_dd)),
-                "selectionMode": getattr(_sm, "value", str(_sm)),
-                "selBehavior": getattr(_sb, "value", str(_sb)),
-            },
-        )
-        # #endregion
 
     def _on_selection_changed(self, *_args: object) -> None:
         if self._filtering_selection:
@@ -110,32 +59,8 @@ class EditableCalmapTable(QTableWidget):
             idxs = [ix for ix in sm.selectedIndexes() if ix.isValid()]
             if not idxs:
                 return
-            cur = sm.currentIndex()
-            wanted_cur = self._host.editor_cell_kind(cur.row(), cur.column()) if cur.isValid() else "invalid"
             wanted = self._host.editor_cell_kind(idxs[0].row(), idxs[0].column())
-            # #region agent log
-            _edit_agent_log(
-                "C",
-                "edit_table._on_selection_changed",
-                "selection from first index",
-                {
-                    "n_sel": len(idxs),
-                    "cur_rc": [cur.row(), cur.column()] if cur.isValid() else None,
-                    "wanted_cur": wanted_cur,
-                    "wanted_first": wanted,
-                    "first_rc": [idxs[0].row(), idxs[0].column()],
-                },
-            )
-            # #endregion
             if wanted not in ("value", "axis_x", "axis_y", "scalar"):
-                # #region agent log
-                _edit_agent_log(
-                    "E",
-                    "edit_table._on_selection_changed",
-                    "clearSelection bad first kind",
-                    {"wanted": wanted, "n_sel": len(idxs)},
-                )
-                # #endregion
                 sm.clearSelection()
                 return
             for ix in list(idxs):
@@ -157,19 +82,6 @@ class EditableCalmapTable(QTableWidget):
             ch = event.text()
             if len(ch) == 1 and ch in _BULK_OP_BY_TEXT:
                 op = _BULK_OP_BY_TEXT[ch]
-                # #region agent log
-                _edit_agent_log(
-                    "EQ_CHAR",
-                    "edit_table.keyPressEvent",
-                    "bulk op via event.text()",
-                    {
-                        "text": ch,
-                        "op": op,
-                        "key": _qt_int_for_log(k),
-                        "mods": _qt_int_for_log(mods),
-                    },
-                )
-                # #endregion
                 self._host.editor_handle_bulk_operator(op)
                 event.accept()
                 return

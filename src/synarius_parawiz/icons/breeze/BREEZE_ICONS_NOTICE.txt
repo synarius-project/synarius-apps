@@ -13,6 +13,10 @@ Bundled files and upstream paths:
   utilities-terminal.svg — icons/apps/22/utilities-terminal.svg
   dialog-ok-apply.svg    — icons/actions/22/dialog-ok-apply.svg
   vcs-diff.svg           — icons/actions/22/vcs-diff.svg
+  edit-clear-all.svg     — icons/actions/22/edit-clear-all.svg
+                         (KDE theme preview, same artwork at higher nominal size:
+                         https://develop.kde.org/themeicons/breeze/actions/24@3x/edit-clear-all.svg )
+  edit-copy.svg          — icons/actions/22/edit-copy.svg
 
 SPDX-License-Identifier: LGPL-3.0-only
 Full license text: https://spdx.org/licenses/LGPL-3.0-only.html

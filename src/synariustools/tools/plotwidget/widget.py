@@ -51,6 +51,7 @@ from synariustools.tools.plotwidget.series_math import (
 )
 from synariustools.tools.plotwidget.svg_icons import icon_from_tinted_svg_file
 
+
 def _find_window_host(widget: QWidget) -> QWidget | None:
     w: QWidget | None = widget
     while w is not None:
@@ -888,7 +889,12 @@ class DataViewerWidget(QWidget):
         return Path.home()
 
     def _next_save_filename(self) -> Path:
-        ext = ".mf4" if self._save_last_format == "mdf" else ".parquet" if self._save_last_format == "parquet" else ".csv"
+        if self._save_last_format == "mdf":
+            ext = ".mf4"
+        elif self._save_last_format == "parquet":
+            ext = ".parquet"
+        else:
+            ext = ".csv"
         stem = self._save_last_basename or "measurement"
         base_dir = self._default_save_dir()
         candidate = base_dir / f"{stem}{ext}"

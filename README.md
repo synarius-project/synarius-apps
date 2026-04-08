@@ -9,6 +9,8 @@
 | **Repository** | [synarius-project/synarius-apps](https://github.com/synarius-project/synarius-apps) |
 | **PyPI-style name** | `synarius-apps` (see `pyproject.toml`) |
 
+**Contributing:** follow the **[Synarius programming guidelines](https://synarius-project.github.io/synarius-guidelines/programming_guidelines.html)** (HTML) and this repository’s **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+
 **Note (Windows checkout):** If a junction `synarius-apps` still points at a folder named `synarius-dataviewer`, that layout is fine. To rename the directory in place: close tools using it, remove only the junction (`rmdir synarius-apps`), then rename the real folder to `synarius-apps`.
 
 ## Synarius DataViewer
@@ -18,6 +20,8 @@
 The **Synarius DataViewer** is a PySide6 application for exploring **multi-channel time-series**: an **oscilloscope-style plot** (zoom, pan, rubber-band zoom, optional walking time window), a **legend** with per-channel visibility, live values, and optional **A/B cursors**, plus **drag-and-drop** (or programmatic) channel loading. The same plot stack is used when **Synarius Studio** opens a live viewer for a diagram **DataViewer** block. Implementation lives in `src/synarius_dataviewer/` and `src/synariustools/tools/plotwidget/`; run it with the console entry point **`synarius-dataviewer`**.
 
 ## Install (development)
+
+**Python 3.11.x** is required (see `requires-python` in `pyproject.toml`).
 
 **CI / clones** resolve `synarius-core` via the Git URL pinned in `pyproject.toml`. Measurement file I/O is implemented in **synarius-core** (`synarius_core.io`); this package still declares `pandas` / `pyarrow` / `asammdf` / `numpy` so installers resolve one consistent stack.
 
