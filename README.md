@@ -2,7 +2,7 @@
 
 ![Synarius title image](docs/_static/synarius-title.png)
 
-**synarius-apps** bundles the **Synarius DataViewer** (MDI desktop app for inspecting time-series and measurements), **Synarius ParaWiz** (reference app for parameter-set workflows), and shared Qt UI pieces under **`synariustools`**, especially the reusable scope/legend plot widget. It depends on **[synarius-core](https://github.com/synarius-project/synarius-core)**.
+**synarius-apps** bundles the **Synarius DataViewer** (MDI desktop app for inspecting time-series and measurements), **Synarius ParaWiz** (desktop app for comparing and editing calibration parameters across datasets), and shared Qt UI pieces under **`synariustools`**, especially the reusable scope/legend plot widget. It depends on **[synarius-core](https://github.com/synarius-project/synarius-core)**.
 
 | | |
 |--|--|
@@ -18,6 +18,20 @@
 ![Synarius DataViewer — oscilloscope, toolbar, and signal legend](docs/images/DataViewer.png)
 
 The **Synarius DataViewer** is a PySide6 application for exploring **multi-channel time-series**: an **oscilloscope-style plot** (zoom, pan, rubber-band zoom, optional walking time window), a **legend** with per-channel visibility, live values, and optional **A/B cursors**, plus **drag-and-drop** (or programmatic) channel loading. The same plot stack is used when **Synarius Studio** opens a live viewer for a diagram **DataViewer** block. Implementation lives in `src/synarius_dataviewer/` and `src/synariustools/tools/plotwidget/`; run it with the console entry point **`synarius-dataviewer`**.
+
+## Synarius ParaWiz
+
+![Synarius ParaWiz — parameter table, curve editor, and map editor](docs/images/ParaWiz.png)
+
+**Synarius ParaWiz** is a PySide6 **parameter-workbench** built on the same **synarius-core** model and **Controller Command Protocol (CCP)** as Synarius Studio. Typical workflow:
+
+- **Load and compare** two or more **parameter datasets** (e.g. DCM-based) in a single **table**: one row per calibration name, one column per dataset, with optional **filters** (name search, hide equal / show only differing rows).
+- **Visual diff**: cell styling and icons highlight **scalar vs. curve vs. map** parameters and cross-dataset differences.
+- **Deep inspection**: double-click opens dedicated editors for **CURVE** (tabular breakpoints + 2D plot) and **MAP** (value matrix, axis labels, **3D surface** preview). Edits follow the same rules as the rest of the Synarius toolchain (repository-backed parameters).
+- **Scratch target**: copy selected parameters into a dedicated **`parawiz_target`** dataset for staging changes without overwriting comparison files.
+- **Console**: optional **CLI / CCP** integration for scripting (`select`, `cp`, dataset registration, …).
+
+Implementation lives in `src/synarius_parawiz/`; run it with **`synarius-parawiz`**.
 
 ## Install (development)
 
