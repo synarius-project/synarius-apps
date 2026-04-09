@@ -69,6 +69,11 @@ class ParameterTableSplitView(QWidget):
         self._target_body.itemSelectionChanged.connect(self._on_target_selection_changed)
 
     @property
+    def is_syncing_row_selection(self) -> bool:
+        """True während programmatischer Abgleich Haupt↔Ziel↔Namenspalte (kein user „Spalten kollabieren“)."""
+        return self._sync_sel_guard
+
+    @property
     def main_header(self) -> QTableWidget:
         return self._main_header
 
@@ -168,13 +173,12 @@ class ParameterTableSplitView(QWidget):
         # zurückgesetzt und Target→Main→Target feuert rekursiv (siehe itemSelectionChanged).
         sm.clearSelection()
         model = tw.model()
-        for r in sorted(rows):
-            if r < 0 or r >= tw.rowCount():
-                continue
+        valid_rows = [r for r in sorted(rows) if 0 <= r < tw.rowCount()]
+        for r in valid_rows:
             ix = model.index(r, col)
             sm.select(ix, QItemSelectionModel.SelectionFlag.Select)
-        if rows:
-            r0 = min(r for r in rows if 0 <= r < tw.rowCount())
+        if valid_rows:
+            r0 = min(valid_rows)
             sm.setCurrentIndex(
                 model.index(r0, col),
                 QItemSelectionModel.SelectionFlag(0),

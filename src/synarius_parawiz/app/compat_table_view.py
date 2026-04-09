@@ -115,6 +115,8 @@ class CompatTableView(QTableView):
         icon = item.icon()
         if not icon.isNull():
             self._model.setData(idx, icon, Qt.ItemDataRole.DecorationRole)
+        else:
+            self._model.setData(idx, None, Qt.ItemDataRole.DecorationRole)
         self._model.setData(idx, item.data(Qt.ItemDataRole.UserRole), Qt.ItemDataRole.UserRole)
         self._model.setData(idx, item.font(), Qt.ItemDataRole.FontRole)
         self._model.setData(idx, item.foreground(), Qt.ItemDataRole.ForegroundRole)

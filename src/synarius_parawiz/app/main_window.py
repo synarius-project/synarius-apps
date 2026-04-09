@@ -15,7 +15,7 @@ from pathlib import Path
 from uuid import UUID
 
 import numpy as np
-from PySide6.QtCore import QEvent, QItemSelectionModel, QObject, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QEventLoop, QItemSelectionModel, QObject, QPoint, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QAction,
     QBrush,
@@ -73,7 +73,11 @@ from synarius_parawiz.app.parameter_compare_logic import (
 )
 from synarius_parawiz.app.parameter_table_split_view import ParameterTableSplitView
 from synarius_parawiz.app.status_progress_widget import StatusMessageProgressBar
-from synariustools.tools.plotwidget.svg_icons import icon_from_svg_file, icon_from_tinted_svg_file
+from synariustools.tools.plotwidget.svg_icons import (
+    icon_from_svg_file,
+    icon_from_tinted_svg_file,
+    icon_from_tinted_svg_file_fit_height,
+)
 
 _LOG_PERF = logging.getLogger("synarius_parawiz.performance")
 # Protokoll-Backlog ohne Konsole: keine mehreren MB pro ``cmd``-Eintrag
@@ -104,38 +108,6 @@ def _parawiz_profile_copy_log(msg: str) -> None:
     line = "parawiz profile copy: " + msg
     _LOG_PERF.info(line)
     print(line, file=sys.stderr, flush=True)
-
-
-def _parawiz_agent_ndjson(
-    *,
-    hypothesis_id: str,
-    location: str,
-    message: str,
-    data: dict,
-    run_id: str = "pre-fix",
-) -> None:
-    # region agent log
-    try:
-        _p = Path(__file__).resolve().parents[4] / "debug-788002.log"
-        with _p.open("a", encoding="utf-8") as _f:
-            _f.write(
-                json.dumps(
-                    {
-                        "sessionId": "788002",
-                        "hypothesisId": hypothesis_id,
-                        "location": location,
-                        "message": message,
-                        "data": data,
-                        "timestamp": int(time.time() * 1000),
-                        "runId": run_id,
-                    },
-                    default=str,
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
-    # endregion
 
 
 def _parawiz_effective_cross_style_row_cap(class_default: int) -> int:
@@ -184,12 +156,19 @@ _PARAWIZ_DIFF_CLUSTER_HEX = (
 _PARAWIZ_NAME_COL_MIXED_HEX = "#4b5563"
 # Fester Modellname: separater Schreib-/Zielsatensatz (nur Target-Spalte), nicht als Vergleichsspalte.
 PARAWIZ_TARGET_DATASET_NAME = "parawiz_target"
+# Modellattribut: markiert den ParaWiz-Scratch-Datensatz (UUID stabil; Name darf nach swap_ds getauscht sein).
+PARAWIZ_SCRATCH_MARKER_ATTR = "parawiz_scratch_marker"
 
 
-def _parawiz_build_ccp_select_lines(refs: list[str], *, max_cmd_chars: int) -> list[str]:
-    """Split ``refs`` into ``select`` / ``select -p`` CCP lines so each stays under ``max_cmd_chars``.
+def _parawiz_build_ccp_select_lines(
+    refs: list[str], *, max_cmd_chars: int, every_chunk_append: bool = False
+) -> list[str]:
+    """Split ``refs`` into CCP ``select``-Zeilen unter ``max_cmd_chars``.
 
-    Greedy O(n): vermeidet ``cur + [r]`` und wiederholtes ``join`` (war bei ~10k Refs O(n²) und Minuten).
+    Ohne ``every_chunk_append``: erste Zeile ``select …`` (ersetzt Selektion), weitere ``select -p …`` (anfügen).
+
+    Mit ``every_chunk_append=True``: alle Zeilen ``select -p …`` — nötig, wenn zur bestehenden Modell-Selektion
+    angefügt werden soll (siehe ``MinimalController._cmd_select``).
     """
     if not refs:
         return []
@@ -198,6 +177,8 @@ def _parawiz_build_ccp_select_lines(refs: list[str], *, max_cmd_chars: int) -> l
     body_len = 0
 
     def line_prefix() -> str:
+        if every_chunk_append:
+            return "select -p "
         return "select " if not chunks else "select -p "
 
     for r in refs:
@@ -228,7 +209,9 @@ def _parawiz_build_ccp_select_lines(refs: list[str], *, max_cmd_chars: int) -> l
         chunks.append(cur)
     out: list[str] = []
     for i, ch in enumerate(chunks):
-        if i == 0:
+        if every_chunk_append:
+            out.append("select -p " + " ".join(shlex.quote(x) for x in ch))
+        elif i == 0:
             out.append("select " + " ".join(shlex.quote(x) for x in ch))
         else:
             out.append("select -p " + " ".join(shlex.quote(x) for x in ch))
@@ -307,9 +290,10 @@ class _ParawizModelSelectionDelegate(QStyledItemDelegate):
 
 
 class MainWindow(QMainWindow):
-    # Ab dieser Zeilenzahl keine Cross-Dataset-Vergleichsformatierung (kein get_compare_fingerprints; sonst sehr teuer).
-    # Überschreibbar: SYNARIUS_PARAWIZ_CROSS_STYLE_MAX_ROWS (Zahl). Bei sehr großen Listen ggf. Namensfilter nutzen.
-    _PARAWIZ_CROSS_STYLE_MAX_ROWS = 12_000
+    # Ab dieser Zeilenzahl: ohne Namensfilter und ohne Zeilenfilter keine Cross-Style-Fingerprints (sonst sehr teuer).
+    # Mit Namensfilter (oder Zeilenfilter „ungleiche/gleiche ausblenden“) weiterhin volle Vergleichsdaten.
+    # Überschreibbar: SYNARIUS_PARAWIZ_CROSS_STYLE_MAX_ROWS (Zahl).
+    _PARAWIZ_CROSS_STYLE_MAX_ROWS = 5_000
     # CCP-Zeilen für Kennfeld/Kennlinie: in-process ohne Shell-Limits, dennoch abgesichert
     _PARAWIZ_CCP_CMD_MAX_TOTAL = 280_000
     _parawiz_missing_ds_brush_cached: QBrush | None = None
@@ -393,24 +377,31 @@ class MainWindow(QMainWindow):
         return QIcon(pm)
 
     @staticmethod
-    def _parawiz_cross_dataset_filter_button_stylesheet() -> str:
-        """Kompakter Toggle-Button für Gleich/Abweichend mit sichtbarem Icon."""
-        return (
-            "QToolButton {"
-            " background-color: #586cd4;"
-            " color: #ffffff;"
-            " border: 1px solid #3f51b8;"
-            " border-radius: 4px;"
-            " padding: 2px;"
-            "}"
-            "QToolButton:hover { background-color: #6a7ce0; }"
-            "QToolButton:pressed { background-color: #4f61c8; }"
-            "QToolButton:checked { border: 2px solid #ffffff; }"
-            "QToolButton:disabled {"
-            " background-color: #6d7482;"
-            " border: 1px solid #565c69;"
-            "}"
+    def _parawiz_dataset_switch_icon_white(*, logical_height: int = 18) -> QIcon:
+        """Weißes Switch-Symbol für Tausch mit Zieldatensatz (wie Löschen-Button auf farbigem Kopf)."""
+        p = Path(_synarius_parawiz_pkg.__file__).resolve().parent / "icons" / "switch.svg"
+        if not p.is_file():
+            return QIcon()
+        ic, _ = icon_from_tinted_svg_file_fit_height(
+            p, QColor(255, 255, 255), logical_height=logical_height
         )
+        return ic
+
+    @staticmethod
+    def _parawiz_document_save_icon_white(*, logical_height: int = 18) -> QIcon:
+        """Weißes Speichern-Symbol (Breeze ``document-save``) für DCM-Export auf dunklem Kopf."""
+        p = Path(_synarius_parawiz_pkg.__file__).resolve().parent / "icons" / "breeze" / "document-save.svg"
+        if not p.is_file():
+            return QIcon()
+        ic, _ = icon_from_tinted_svg_file_fit_height(
+            p, QColor(255, 255, 255), logical_height=logical_height
+        )
+        return ic
+
+    @staticmethod
+    def _parawiz_cross_dataset_filter_button_stylesheet() -> str:
+        """Kompakter Toggle-Button für Gleich/Abweichend — Farben aus ``theme.parawiz_compact_action_toolbutton_stylesheet``."""
+        return theme.parawiz_compact_action_toolbutton_stylesheet()
 
     def __init__(self) -> None:
         super().__init__()
@@ -444,6 +435,12 @@ class MainWindow(QMainWindow):
         self._parawiz_resize_w0 = 0
         self._parawiz_resize_w1 = 0
         self._parawiz_resize_reason: str | None = None
+        self._parawiz_resize_target_drag = False
+        self._parawiz_resize_target_start_gx = 0
+        self._parawiz_resize_target_w0 = 0
+        self._parawiz_resize_target_edge: str = "left"
+        self._parawiz_resize_target_grab_widget: QWidget | None = None
+        self._parawiz_resize_scroll_grab_widget: QWidget | None = None
         self._parawiz_copy_in_progress = False
         self._parawiz_compare_first_pid: UUID | None = None
         self._parawiz_compare_first_row: int | None = None
@@ -473,7 +470,7 @@ class MainWindow(QMainWindow):
             " border-radius: 2px;"
             " padding: 3px 8px;"
             "}"
-            "QLineEdit:focus { border: 1px solid #586cd4; }"
+            f"QLineEdit:focus {{ border: 1px solid {theme.PARAWIZ_ACTION_BUTTON_BACKGROUND}; }}"
             "QLineEdit QToolButton {"
             " background: transparent;"
             " border: none;"
@@ -535,8 +532,56 @@ class MainWindow(QMainWindow):
         self._btn_filter_hide_equal.toggled.connect(self._on_cross_dataset_filter_toggled)
         _filter_row_lay.addWidget(self._btn_filter_hide_unequal, 0, Qt.AlignmentFlag.AlignVCenter)
         _filter_row_lay.addWidget(self._btn_filter_hide_equal, 0, Qt.AlignmentFlag.AlignVCenter)
-
         _filter_row_lay.addStretch(1)
+
+        self._btn_clear_selection = QToolButton(self._filter_row)
+        self._btn_clear_selection.setObjectName("ParaWizClearSelection")
+        self._btn_clear_selection.setText("")
+        self._btn_clear_selection.setCheckable(False)
+        self._btn_clear_selection.setAutoRaise(False)
+        self._btn_clear_selection.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self._btn_clear_selection.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._btn_clear_selection.setStyleSheet(theme.parawiz_compact_action_toolbutton_stylesheet())
+        _clear_svg = MainWindow._parawiz_breeze_icons_dir() / "edit-clear-all.svg"
+        if _clear_svg.is_file():
+            _ic_clr, _isz_clr = icon_from_tinted_svg_file_fit_height(
+                _clear_svg, QColor(255, 255, 255), logical_height=18
+            )
+            self._btn_clear_selection.setIcon(_ic_clr)
+            self._btn_clear_selection.setIconSize(_isz_clr)
+        _cpal_clr = self._btn_clear_selection.palette()
+        _cpal_clr.setColor(QPalette.ColorRole.ButtonText, QColor("#ffffff"))
+        self._btn_clear_selection.setPalette(_cpal_clr)
+        self._btn_clear_selection.setFixedSize(28, 28)
+        self._btn_clear_selection.hide()
+        self._btn_clear_selection.clicked.connect(self._parawiz_clear_model_selection)
+
+        self._btn_copy_to_target = QToolButton(self._filter_row)
+        self._btn_copy_to_target.setObjectName("ParaWizCopyToTarget")
+        self._btn_copy_to_target.setText("")
+        self._btn_copy_to_target.setCheckable(False)
+        self._btn_copy_to_target.setAutoRaise(False)
+        self._btn_copy_to_target.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self._btn_copy_to_target.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._btn_copy_to_target.setStyleSheet(MainWindow._parawiz_cross_dataset_filter_button_stylesheet())
+        _copy_svg = Path(_synarius_parawiz_pkg.__file__).resolve().parent / "icons" / "copy.svg"
+        _fg_tool = QColor(theme.STUDIO_TOOLBAR_FOREGROUND)
+        if _copy_svg.is_file():
+            _ic_copy, _isz_copy = icon_from_tinted_svg_file_fit_height(
+                _copy_svg, _fg_tool, logical_height=18
+            )
+            self._btn_copy_to_target.setIcon(_ic_copy)
+            self._btn_copy_to_target.setIconSize(_isz_copy)
+        _cpal_btn = self._btn_copy_to_target.palette()
+        _cpal_btn.setColor(QPalette.ColorRole.ButtonText, QColor("#ffffff"))
+        self._btn_copy_to_target.setPalette(_cpal_btn)
+        self._btn_copy_to_target.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._btn_copy_to_target.adjustSize()
+        _sh_copy = self._btn_copy_to_target.sizeHint()
+        if _sh_copy.isValid() and not _sh_copy.isEmpty():
+            self._btn_copy_to_target.setFixedSize(_sh_copy)
+        self._btn_copy_to_target.hide()
+        self._btn_copy_to_target.clicked.connect(self._parawiz_copy_selection_to_target_dataset)
 
         self._parawiz_header_scroll_guard = False
         self._parawiz_vscroll_guard = False
@@ -686,6 +731,11 @@ class MainWindow(QMainWindow):
         self._filter_row.setVisible(False)
         lay.addWidget(self._table_row, 1)
         self.setCentralWidget(central)
+        # Volle Fensterbreite für X-Position (Mitte zwischen Tabellen); Filterzeile bleibt links mit Stretch.
+        self._btn_clear_selection.setParent(central)
+        self._btn_copy_to_target.setParent(central)
+        self._table_row.installEventFilter(self)
+        self._filter_row.installEventFilter(self)
         _wbg = theme.CONSOLE_CHROME_BACKGROUND
         _wfg = theme.CONSOLE_TAB_TEXT
         self.setStyleSheet(
@@ -764,6 +814,46 @@ class MainWindow(QMainWindow):
             self._parawiz_apply_param_table_total_width()
         else:
             self._parawiz_sync_param_scroll_geometry()
+        QTimer.singleShot(0, self._parawiz_position_filter_copy_button)
+
+    def _parawiz_position_filter_copy_button(self) -> None:
+        """Clear- und Kopier-Buttons: Paar zentriert im Spalt zwischen Haupt- und Zieltabelle (Clear links)."""
+        if not hasattr(self, "_btn_copy_to_target") or not hasattr(self, "_btn_clear_selection"):
+            return
+        btn_clr = self._btn_clear_selection
+        btn_cp = self._btn_copy_to_target
+        fr = self._filter_row
+        cw = self.centralWidget()
+        if (
+            cw is None
+            or not fr.isVisible()
+            or not self._table_row.isVisible()
+            or not self._param_table_target_column.isVisible()
+        ):
+            btn_clr.hide()
+            btn_cp.hide()
+            return
+        left_tv = self._table
+        right_tv = self._table_target
+        x_right_left_tableview = left_tv.mapTo(cw, QPoint(left_tv.width(), 0)).x()
+        x_left_right_tableview = right_tv.mapTo(cw, QPoint(0, 0)).x()
+        cx_cw = (x_right_left_tableview + x_left_right_tableview) / 2.0
+        fr_top_left = fr.mapTo(cw, QPoint(0, 0))
+        gap = 6
+        btn_clr.adjustSize()
+        btn_cp.adjustSize()
+        w_clr = float(btn_clr.width())
+        w_cp = float(btn_cp.width())
+        total_w = w_clr + gap + w_cp
+        x_left = cx_cw - total_w / 2.0
+        y_clr = int(fr_top_left.y() + max(0, (fr.height() - int(btn_clr.height())) // 2))
+        y_cp = int(fr_top_left.y() + max(0, (fr.height() - int(btn_cp.height())) // 2))
+        btn_clr.move(int(round(x_left)), y_clr)
+        btn_cp.move(int(round(x_left + w_clr + gap)), y_cp)
+        btn_clr.show()
+        btn_cp.show()
+        btn_clr.raise_()
+        btn_cp.raise_()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
         """Hauptfenster zu → gesamte Anwendung beenden (z. B. offenes CLI-Fenster nicht als „letztes Fenster“)."""
@@ -805,6 +895,12 @@ class MainWindow(QMainWindow):
         bx = tfr.columnViewportPosition(0) + tfr.columnWidth(0)
         return abs(vx - bx) <= MainWindow._PARAWIZ_COL_RESIZE_EDGE_PX
 
+    @staticmethod
+    def _parawiz_initial_column_width_from_content(base_px: int) -> int:
+        """Initiale Breite Quell-/Ziel-Spalten: ``base_px`` (nach resizeColumnsToContents) × Theme-Faktor."""
+        fac = float(theme.PARAWIZ_PARAMETER_TABLE_INITIAL_COLUMN_WIDTH_FACTOR)
+        return max(1, int(round(base_px * fac)))
+
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # type: ignore[override]
         try:
             return self._parawiz_event_filter_impl(watched, event)
@@ -827,8 +923,114 @@ class MainWindow(QMainWindow):
         tfh = self._table_header_frozen
         min_w = 72
         et = event.type()
+        if watched in (self._table_row, self._filter_row) and et == QEvent.Type.Resize:
+            QTimer.singleShot(0, self._parawiz_position_filter_copy_button)
+            return False
         scroll_vps = (tw.viewport(), th.viewport())
         frozen_vps = (tfr.viewport(), tfh.viewport())
+
+        if isinstance(event, QMouseEvent):
+            if et == QEvent.Type.MouseMove:
+                if (
+                    self._parawiz_resize_split_i is not None
+                    and not self._parawiz_resize_frozen_drag
+                    and not self._parawiz_resize_target_drag
+                    and self._parawiz_resize_scroll_grab_widget is not None
+                    and watched is self._parawiz_resize_scroll_grab_widget
+                    and self._parawiz_resize_scroll_mode in ("pair", "tail")
+                ):
+                    dx = int(event.globalPosition().x() - self._parawiz_resize_start_gx)
+                    self._parawiz_apply_scroll_resize_delta(dx)
+                    self._parawiz_apply_param_table_total_width()
+                    return True
+                if (
+                    self._parawiz_resize_target_drag
+                    and self._parawiz_resize_target_grab_widget is not None
+                    and watched is self._parawiz_resize_target_grab_widget
+                ):
+                    dx = int(event.globalPosition().x() - self._parawiz_resize_target_start_gx)
+                    ttw = self._table_target
+                    tth = self._table_target_header
+                    w0 = self._parawiz_resize_target_w0
+                    if self._parawiz_resize_target_edge == "right":
+                        new_w = max(min_w, w0 + dx)
+                    else:
+                        new_w = max(min_w, w0 - dx)
+                    ttw.setColumnWidth(0, new_w)
+                    tth.setColumnWidth(0, new_w)
+                    self._param_table_split.set_target_fixed_width(new_w)
+                    self._parawiz_apply_param_table_total_width()
+                    return True
+            if et == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                if (
+                    self._parawiz_resize_split_i is not None
+                    and not self._parawiz_resize_frozen_drag
+                    and not self._parawiz_resize_target_drag
+                    and self._parawiz_resize_scroll_grab_widget is not None
+                    and watched is self._parawiz_resize_scroll_grab_widget
+                ):
+                    gw = self._parawiz_resize_scroll_grab_widget
+                    self._parawiz_resize_split_i = None
+                    self._parawiz_resize_scroll_mode = None
+                    self._parawiz_resize_scroll_grab_widget = None
+                    gw.releaseMouse()
+                    QTimer.singleShot(0, self._parawiz_refresh_dataset_header_visuals)
+                    return True
+                if (
+                    self._parawiz_resize_target_drag
+                    and self._parawiz_resize_target_grab_widget is not None
+                    and watched is self._parawiz_resize_target_grab_widget
+                ):
+                    self._parawiz_resize_target_drag = False
+                    self._parawiz_resize_target_grab_widget.releaseMouse()
+                    self._parawiz_resize_target_grab_widget = None
+                    QTimer.singleShot(0, self._parawiz_refresh_dataset_header_visuals)
+                    return True
+
+        # Kopf-Zellen-Widgets (beide Titelzeilen): X in Viewport-Koordinaten wie im Tabellenkörper —
+        # Ziehlinie gilt über volle Label-/Zellfläche, nicht nur an Widget-Rändern.
+        th_vp = th.viewport()
+        if (
+            isinstance(watched, QWidget)
+            and th_vp is not None
+            and watched is not th_vp
+            and watched is not tw.viewport()
+            and th.isAncestorOf(watched)
+            and isinstance(event, QMouseEvent)
+            and tw.columnCount() > 0
+        ):
+            pt = watched.mapTo(th_vp, event.position().toPoint())
+            vx = pt.x()
+            hit, mode = MainWindow._parawiz_scroll_resize_hit_extended(th, vx)
+            if et == QEvent.Type.MouseMove:
+                if (
+                    self._parawiz_resize_split_i is None
+                    and not self._parawiz_resize_target_drag
+                    and not self._parawiz_resize_frozen_drag
+                    and self._parawiz_resize_scroll_grab_widget is None
+                ):
+                    cur = Qt.CursorShape.SizeHorCursor if hit is not None else Qt.CursorShape.ArrowCursor
+                    tw.viewport().setCursor(cur)
+                    th.viewport().setCursor(cur)
+                    watched.setCursor(cur)
+                return False
+            if et == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                if hit is None or mode == "none":
+                    return False
+                self._parawiz_resize_frozen_drag = False
+                self._parawiz_resize_target_drag = False
+                self._parawiz_resize_split_i = hit
+                self._parawiz_resize_scroll_mode = mode
+                self._parawiz_resize_start_gx = int(event.globalPosition().x())
+                if mode == "tail":
+                    self._parawiz_resize_w0 = tw.columnWidth(hit)
+                    self._parawiz_resize_w1 = 0
+                else:
+                    self._parawiz_resize_w0 = tw.columnWidth(hit)
+                    self._parawiz_resize_w1 = tw.columnWidth(hit + 1)
+                self._parawiz_resize_scroll_grab_widget = th_vp
+                th_vp.grabMouse()
+                return True
 
         if watched in self._parawiz_dataset_title_widgets and isinstance(event, QMouseEvent):
             if (
@@ -849,30 +1051,16 @@ class MainWindow(QMainWindow):
             tab = tw if watched is tw.viewport() else th
             if isinstance(event, QMouseEvent):
                 if et == QEvent.Type.MouseMove:
-                    if self._parawiz_resize_split_i is not None and not self._parawiz_resize_frozen_drag:
-                        i = self._parawiz_resize_split_i
-                        dx = int(event.globalPosition().x() - self._parawiz_resize_start_gx)
-                        mode = self._parawiz_resize_scroll_mode
-                        if mode == "tail":
-                            new_w = max(min_w, self._parawiz_resize_w0 + dx)
-                            tw.setColumnWidth(i, new_w)
-                            th.setColumnWidth(i, new_w)
-                        else:
-                            new_left = self._parawiz_resize_w0 + dx
-                            pair = self._parawiz_resize_w0 + self._parawiz_resize_w1
-                            new_left = max(min_w, min(new_left, pair - min_w))
-                            new_right = pair - new_left
-                            tw.setColumnWidth(i, new_left)
-                            th.setColumnWidth(i, new_left)
-                            tw.setColumnWidth(i + 1, new_right)
-                            th.setColumnWidth(i + 1, new_right)
-                        self._parawiz_apply_param_table_total_width()
-                        return True
-                    pos = event.position().toPoint()
-                    hit, _hm = MainWindow._parawiz_scroll_resize_hit_extended(tab, pos.x())
-                    cur = Qt.CursorShape.SizeHorCursor if hit is not None else Qt.CursorShape.ArrowCursor
-                    tw.viewport().setCursor(cur)
-                    th.viewport().setCursor(cur)
+                    if (
+                        self._parawiz_resize_split_i is None
+                        and not self._parawiz_resize_frozen_drag
+                        and self._parawiz_resize_scroll_grab_widget is None
+                    ):
+                        pos = event.position().toPoint()
+                        hit, _hm = MainWindow._parawiz_scroll_resize_hit_extended(tab, pos.x())
+                        cur = Qt.CursorShape.SizeHorCursor if hit is not None else Qt.CursorShape.ArrowCursor
+                        tw.viewport().setCursor(cur)
+                        th.viewport().setCursor(cur)
                     return False
                 if et == QEvent.Type.MouseButtonPress:
                     if event.button() != Qt.MouseButton.LeftButton:
@@ -882,6 +1070,7 @@ class MainWindow(QMainWindow):
                     if hit is None or mode == "none":
                         return False
                     self._parawiz_resize_frozen_drag = False
+                    self._parawiz_resize_target_drag = False
                     self._parawiz_resize_split_i = hit
                     self._parawiz_resize_scroll_mode = mode
                     self._parawiz_resize_start_gx = int(event.globalPosition().x())
@@ -891,21 +1080,15 @@ class MainWindow(QMainWindow):
                     else:
                         self._parawiz_resize_w0 = tw.columnWidth(hit)
                         self._parawiz_resize_w1 = tw.columnWidth(hit + 1)
-                    (tw.viewport() if watched is tw.viewport() else th.viewport()).grabMouse()
+                    gw = tw.viewport() if watched is tw.viewport() else th.viewport()
+                    self._parawiz_resize_scroll_grab_widget = gw
+                    gw.grabMouse()
                     return True
-                if et == QEvent.Type.MouseButtonRelease:
-                    if event.button() != Qt.MouseButton.LeftButton:
-                        return False
-                    if self._parawiz_resize_split_i is not None and not self._parawiz_resize_frozen_drag:
-                        self._parawiz_resize_split_i = None
-                        self._parawiz_resize_scroll_mode = None
-                        tw.viewport().releaseMouse()
-                        th.viewport().releaseMouse()
-                        return True
             if (
                 et == QEvent.Type.Leave
                 and self._parawiz_resize_split_i is None
                 and not self._parawiz_resize_frozen_drag
+                and self._parawiz_resize_scroll_grab_widget is None
             ):
                 tw.viewport().unsetCursor()
                 th.viewport().unsetCursor()
@@ -951,11 +1134,102 @@ class MainWindow(QMainWindow):
                     if self._parawiz_resize_frozen_drag:
                         self._parawiz_resize_frozen_drag = False
                         tfr.viewport().releaseMouse()
+                        QTimer.singleShot(0, self._parawiz_refresh_dataset_header_visuals)
                         return True
             if et == QEvent.Type.Leave and not self._parawiz_resize_frozen_drag:
                 tfr.viewport().unsetCursor()
                 tfh.viewport().unsetCursor()
             return False
+
+        ttw = self._table_target
+        tth = self._table_target_header
+        tth_vp = tth.viewport()
+        ttw_vp = ttw.viewport()
+        if (
+            isinstance(watched, QWidget)
+            and tth_vp is not None
+            and ttw_vp is not None
+            and watched is not tth_vp
+            and watched is not ttw_vp
+            and tth.isAncestorOf(watched)
+            and isinstance(event, QMouseEvent)
+            and ttw.columnCount() > 0
+        ):
+            edge = MainWindow._PARAWIZ_COL_RESIZE_EDGE_PX
+            pt = watched.mapTo(tth_vp, event.position().toPoint())
+            vx = pt.x()
+            vw = tth_vp.width()
+            hit_r = vx >= vw - edge
+            hit_l = vx <= edge
+            if et == QEvent.Type.MouseMove:
+                if not self._parawiz_resize_target_drag:
+                    cur = (
+                        Qt.CursorShape.SizeHorCursor
+                        if (hit_l or hit_r)
+                        else Qt.CursorShape.ArrowCursor
+                    )
+                    ttw_vp.setCursor(cur)
+                    tth_vp.setCursor(cur)
+                    watched.setCursor(cur)
+                return False
+            if et == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                if not hit_l and not hit_r:
+                    return False
+                self._parawiz_resize_target_drag = True
+                self._parawiz_resize_target_edge = "right" if hit_r else "left"
+                self._parawiz_resize_target_start_gx = int(event.globalPosition().x())
+                self._parawiz_resize_target_w0 = ttw.columnWidth(0)
+                self._parawiz_resize_target_grab_widget = tth_vp
+                tth_vp.grabMouse()
+                return True
+
+        target_vps = (self._table_target.viewport(), self._table_target_header.viewport())
+        if watched in target_vps and self._table_target.columnCount() > 0:
+            edge = MainWindow._PARAWIZ_COL_RESIZE_EDGE_PX
+            if isinstance(event, QMouseEvent):
+                if et == QEvent.Type.MouseMove:
+                    if not self._parawiz_resize_target_drag:
+                        pos = event.position().toPoint()
+                        w = watched.width() if isinstance(watched, QWidget) else 0
+                        hit_r = pos.x() >= w - edge
+                        hit_l = pos.x() <= edge
+                        cur = (
+                            Qt.CursorShape.SizeHorCursor
+                            if (hit_l or hit_r)
+                            else Qt.CursorShape.ArrowCursor
+                        )
+                        self._table_target.viewport().setCursor(cur)
+                        self._table_target_header.viewport().setCursor(cur)
+                    return False
+                if et == QEvent.Type.MouseButtonPress:
+                    if event.button() != Qt.MouseButton.LeftButton:
+                        return False
+                    pos = event.position().toPoint()
+                    w = watched.width() if isinstance(watched, QWidget) else 0
+                    hit_r = pos.x() >= w - edge
+                    hit_l = pos.x() <= edge
+                    if not hit_l and not hit_r:
+                        return False
+                    self._parawiz_resize_target_drag = True
+                    self._parawiz_resize_target_edge = "right" if hit_r else "left"
+                    self._parawiz_resize_target_start_gx = int(event.globalPosition().x())
+                    self._parawiz_resize_target_w0 = self._table_target.columnWidth(0)
+                    if isinstance(watched, QWidget):
+                        self._parawiz_resize_target_grab_widget = watched
+                        watched.grabMouse()
+                    return True
+            if et == QEvent.Type.Leave and not self._parawiz_resize_target_drag:
+                self._table_target.viewport().unsetCursor()
+                self._table_target_header.viewport().unsetCursor()
+            return False
+
+        if isinstance(watched, QLabel):
+            if watched.property("parawiz_full_ds_title") is not None and et in (
+                QEvent.Type.Resize,
+                QEvent.Type.Show,
+            ):
+                self._parawiz_update_single_dataset_title_elide(watched)
+                return False
 
         return super().eventFilter(watched, event)
 
@@ -1019,7 +1293,6 @@ class MainWindow(QMainWindow):
             (self._act_open_script, "document-open.svg"),
             (self._act_open_source, "document-import.svg"),
             (self._act_refresh, "view-refresh.svg"),
-            (self._act_copy_to_target, "edit-copy.svg"),
             (self._act_clear_selection, "edit-clear-all.svg"),
             (self._act_console, "utilities-terminal.svg"),
         ]
@@ -1033,9 +1306,12 @@ class MainWindow(QMainWindow):
         self._table_row.setVisible(show)
         self._filter_row.setVisible(show)
         self._act_copy_to_target.setEnabled(show)
+        self._btn_copy_to_target.setEnabled(show)
+        self._btn_clear_selection.setEnabled(show)
         if show:
             self._parawiz_update_filter_field_width_one_third()
             self._parawiz_update_filter_count_label()
+            QTimer.singleShot(0, self._parawiz_position_filter_copy_button)
 
     def _parawiz_sync_param_scroll_geometry(self) -> None:
         if not hasattr(self, "_param_table_scroll"):
@@ -1139,18 +1415,140 @@ class MainWindow(QMainWindow):
                 tw.setFixedWidth(int(cols_sum + vs_extra))
             if nt > 0:
                 for c in range(nt):
-                    w = max(ttw.columnWidth(c), 140)
+                    w = max(ttw.columnWidth(c), min_w)
                     ttw.setColumnWidth(c, w)
                     tth.setColumnWidth(c, w)
                 target_cols_sum = sum(ttw.columnWidth(c) for c in range(nt))
                 tth.setFixedWidth(int(target_cols_sum))
                 ttw.setFixedWidth(int(target_cols_sum))
                 self._param_table_split.set_target_fixed_width(int(target_cols_sum))
-            # Host (nur Haupttabelle): mindestens Viewportbreite oder Inhalt — Target liegt außerhalb der ScrollArea.
-            vp_w = int(self._param_table_scroll.viewport().width())
-            # Nur Haupt-Tabellenbreite im Scroll-Inhalt; Target liegt fest rechts neben der ScrollArea.
-            self._param_table_host.setFixedWidth(max(int(total), vp_w, 1))
+            # Tabellen-Hostbreite = Summe der Spalten (Zieh enger → Table-View-Widget wird schmaler).
+            self._param_table_host.setFixedWidth(max(int(total), 1))
         self._parawiz_sync_param_scroll_geometry()
+
+    def _parawiz_apply_scroll_resize_delta(self, dx: int) -> None:
+        min_w = 72
+        tw = self._table
+        th = self._table_header
+        i = self._parawiz_resize_split_i
+        if i is None:
+            return
+        mode = self._parawiz_resize_scroll_mode
+        if mode == "tail":
+            new_w = max(min_w, self._parawiz_resize_w0 + dx)
+            tw.setColumnWidth(i, new_w)
+            th.setColumnWidth(i, new_w)
+        elif mode == "pair":
+            new_left = self._parawiz_resize_w0 + dx
+            pair = self._parawiz_resize_w0 + self._parawiz_resize_w1
+            new_left = max(min_w, min(new_left, pair - min_w))
+            new_right = pair - new_left
+            tw.setColumnWidth(i, new_left)
+            th.setColumnWidth(i, new_left)
+            tw.setColumnWidth(i + 1, new_right)
+            th.setColumnWidth(i + 1, new_right)
+
+    def _parawiz_update_single_dataset_title_elide(self, lbl: QLabel) -> None:
+        """Kopfzeile Datensatzname: bei Platzmangel mit … kürzen, vollen Namen als Tooltip."""
+        raw = lbl.property("parawiz_full_ds_title")
+        if raw is None:
+            return
+        full_s = str(raw)
+        lbl.setWordWrap(False)
+        avail = lbl.width() - 2
+        if avail < 12:
+            return
+        fm = lbl.fontMetrics()
+        elided = fm.elidedText(full_s, Qt.TextElideMode.ElideRight, avail)
+        lbl.setText(elided)
+        lbl.setToolTip(full_s if elided != full_s else "")
+
+    def _parawiz_refresh_all_dataset_title_elides(self) -> None:
+        for _tw in (self._table_header, self._table_target_header):
+            for lbl in _tw.findChildren(QLabel):
+                if lbl.property("parawiz_full_ds_title") is not None:
+                    self._parawiz_update_single_dataset_title_elide(lbl)
+
+    def _parawiz_refresh_dataset_header_visuals(self) -> None:
+        self._parawiz_refresh_all_dataset_title_elides()
+
+    def _parawiz_install_target_header_action_row(self, tt: QTableWidget) -> None:
+        """Erste Kopfzeile Zielspalte: Löschen-Optik — leert Kenngrößen via ``set <ref>.num_params 0``."""
+        prev = tt.cellWidget(0, 0)
+        if prev is not None:
+            tt.removeCellWidget(0, 0)
+            prev.deleteLater()
+        wrap = QWidget(tt)
+        wrap.setMouseTracking(True)
+        wrap.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        wrap.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        wrap.setStyleSheet(
+            "background-color: #525252; border: none; margin: 0px; padding: 2px 4px;"
+        )
+        wrap.setAutoFillBackground(True)
+        wpal = wrap.palette()
+        wpal.setColor(QPalette.ColorRole.Window, QColor("#525252"))
+        wrap.setPalette(wpal)
+        hlay = QHBoxLayout(wrap)
+        hlay.setContentsMargins(0, 0, 0, 0)
+        hlay.setSpacing(4)
+        btn = QToolButton(wrap)
+        btn.setAutoRaise(False)
+        btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        btn.setStyleSheet(theme.parawiz_compact_action_toolbutton_stylesheet())
+        act = QAction(wrap)
+        act.setText("")
+        act.setIcon(MainWindow._parawiz_dataset_delete_icon_white(logical_side=18))
+        act.setToolTip(
+            "Alle Kenngrößen aus dem Zieldatensatz entfernen; der Parametersatz (parawiz_target) bleibt erhalten "
+            "(CCP: set <Ziel-Ref>.num_params 0)."
+        )
+        act.triggered.connect(self._parawiz_on_clear_target_dataset_parameters)
+        btn.setDefaultAction(act)
+        btn.setIconSize(QSize(18, 18))
+        hlay.addWidget(btn, 0, Qt.AlignmentFlag.AlignLeft)
+        hlay.addStretch(1)
+        btn_save = QToolButton(wrap)
+        btn_save.setAutoRaise(False)
+        btn_save.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        btn_save.setStyleSheet(theme.parawiz_compact_action_toolbutton_stylesheet())
+        act_save = QAction(wrap)
+        act_save.setText("")
+        act_save.setIcon(MainWindow._parawiz_document_save_icon_white(logical_height=18))
+        act_save.setToolTip(
+            "Zieldatensatz als DCM-Datei exportieren (KONSERVIERUNG_FORMAT 2.0; CCP: write \"<Pfad>\")."
+        )
+        act_save.triggered.connect(self._parawiz_on_export_target_dcm)
+        btn_save.setDefaultAction(act_save)
+        btn_save.setIconSize(QSize(18, 18))
+        hlay.addWidget(btn_save, 0, Qt.AlignmentFlag.AlignRight)
+        wrap.installEventFilter(self)
+        tt.setCellWidget(0, 0, wrap)
+
+    def _parawiz_install_target_title_row_widget(self, tt: QTableWidget, caption: str) -> None:
+        """Zweite Kopfzeile Target: wie Quellspalten — QLabel mit Ellipse und Tooltip bei Kürzung."""
+        prev = tt.cellWidget(1, 0)
+        if prev is not None:
+            tt.removeCellWidget(1, 0)
+            prev.deleteLater()
+        wrap = QWidget(tt)
+        wrap.setMouseTracking(True)
+        wrap.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        wrap.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        wrap.setStyleSheet("background-color: #525252; border: none; margin: 0px; padding: 0px;")
+        lay = QHBoxLayout(wrap)
+        lay.setContentsMargins(4, 0, 4, 0)
+        lay.setSpacing(0)
+        lbl = QLabel(caption, wrap)
+        lbl.setMouseTracking(True)
+        lbl.setProperty("parawiz_full_ds_title", caption)
+        lbl.setWordWrap(False)
+        lbl.setStyleSheet("color: #ffffff; background: transparent; border: none;")
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(lbl, 1)
+        lbl.installEventFilter(self)
+        wrap.installEventFilter(self)
+        tt.setCellWidget(1, 0, wrap)
 
     def _parawiz_uniform_column_widths(self) -> None:
         """Spalten nach Inhalt; Namensspalte fix; Rest scrollt horizontal gemeinsam."""
@@ -1168,28 +1566,26 @@ class MainWindow(QMainWindow):
             ttw = self._table_target
             tth = self._table_target_header
             n = tw.columnCount()
-            if n > 0:
-                tw.resizeColumnsToContents()
-                for c in range(n):
-                    w = max(tw.columnWidth(c), min_w)
-                    tw.setColumnWidth(c, w)
-                    th.setColumnWidth(c, w)
-                datasets = self._cached_datasets
-                fm = th.fontMetrics()
-                for i in range(len(datasets)):
-                    ps_name, _ = datasets[i]
-                    if i >= n:
-                        break
-                    need = fm.horizontalAdvance(str(ps_name)) + 28
-                    cur = tw.columnWidth(i)
-                    if cur < need:
-                        tw.setColumnWidth(i, need)
-                        th.setColumnWidth(i, need)
+            w_uniform: int | None = None
             if ttw.columnCount() > 0:
                 ttw.resizeColumnsToContents()
-                w_target = max(min_w + 48, ttw.columnWidth(0), tth.columnWidth(0))
+                tth.resizeColumnsToContents()
+                w_raw = max(min_w, ttw.columnWidth(0), tth.columnWidth(0))
+                w_target = max(min_w, MainWindow._parawiz_initial_column_width_from_content(w_raw))
                 ttw.setColumnWidth(0, w_target)
                 tth.setColumnWidth(0, w_target)
+                w_uniform = w_target
+            if n > 0:
+                if w_uniform is not None:
+                    for c in range(n):
+                        tw.setColumnWidth(c, w_uniform)
+                        th.setColumnWidth(c, w_uniform)
+                else:
+                    tw.resizeColumnsToContents()
+                    for c in range(n):
+                        w = max(tw.columnWidth(c), min_w)
+                        tw.setColumnWidth(c, w)
+                        th.setColumnWidth(c, w)
             self._parawiz_compact_body_row_heights()
             self._parawiz_apply_param_table_total_width()
         finally:
@@ -1256,6 +1652,7 @@ class MainWindow(QMainWindow):
         self._parawiz_sync_param_scroll_geometry()
         if fit_window:
             self._parawiz_fit_window_for_param_table_horizontal()
+        QTimer.singleShot(0, self._parawiz_position_filter_copy_button)
 
     def _parawiz_reset_param_table_hscroll(self) -> None:
         self._parawiz_header_scroll_guard = True
@@ -1646,6 +2043,14 @@ class MainWindow(QMainWindow):
             "bzw. ausgewählte Datensatz-Spalte (lila Modell-Selektion)."
         )
         self._act_copy_to_target.triggered.connect(self._parawiz_copy_selection_to_target_dataset)
+        _copy_menu_icon = Path(_synarius_parawiz_pkg.__file__).resolve().parent / "icons" / "copy.svg"
+        if _copy_menu_icon.is_file():
+            _ic_menu, _ = icon_from_tinted_svg_file_fit_height(
+                _copy_menu_icon, QColor(theme.STUDIO_TOOLBAR_FOREGROUND), logical_height=22
+            )
+            self._act_copy_to_target.setIcon(_ic_menu)
+        self._btn_copy_to_target.setToolTip(self._act_copy_to_target.toolTip())
+        self._btn_clear_selection.setToolTip(self._act_clear_selection.toolTip())
         self._act_quit = QAction("Exit ParaWiz", self)
         self._act_quit.setShortcut(QKeySequence.StandardKey.Quit)
         self._act_quit.triggered.connect(self.close)
@@ -1701,8 +2106,6 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self._act_open_source)
         toolbar.addSeparator()
         toolbar.addAction(self._act_refresh)
-        toolbar.addAction(self._act_copy_to_target)
-        toolbar.addAction(self._act_clear_selection)
         toolbar.addSeparator()
         toolbar.addAction(self._act_console)
 
@@ -1770,19 +2173,6 @@ class MainWindow(QMainWindow):
         line = cmd.strip()
         if not line:
             return ""
-        if source == "parawiz-select" and len(line) > 500:
-            # region agent log
-            _parawiz_agent_ndjson(
-                hypothesis_id="H1",
-                location="main_window._parawiz_execute_ccp",
-                message="ccp_select_cmd_size",
-                data={
-                    "line_chars": len(line),
-                    "source": source,
-                    "will_protocol_echo": echo_command is not False and source != "repl",
-                },
-            )
-            # endregion
         cw = self._console_window
 
         if echo_command is None:
@@ -1802,24 +2192,6 @@ class MainWindow(QMainWindow):
                 self._parawiz_protocol_backlog.append(("cmd", _cmd_log))
                 if len(self._parawiz_protocol_backlog) > 2000:
                     self._parawiz_protocol_backlog = self._parawiz_protocol_backlog[-2000:]
-        if source == "parawiz-select" and len(line) > 500:
-            # region agent log
-            _parawiz_agent_ndjson(
-                hypothesis_id="H2",
-                location="main_window._parawiz_execute_ccp",
-                message="before_controller_execute",
-                data={"line_chars": len(line)},
-            )
-            # endregion
-        if source == "parawiz" and line.split(None, 1)[0].lower() == "cp":
-            # region agent log
-            _parawiz_agent_ndjson(
-                hypothesis_id="H4",
-                location="main_window._parawiz_execute_ccp",
-                message="before_cp_execute",
-                data={"line_chars": len(line), "head": line[:120]},
-            )
-            # endregion
         try:
             out = self._controller.execute(line)
         except CommandError as exc:
@@ -1857,48 +2229,8 @@ class MainWindow(QMainWindow):
                 self._parawiz_protocol_backlog.append(("out", str(out)))
                 if len(self._parawiz_protocol_backlog) > 2000:
                     self._parawiz_protocol_backlog = self._parawiz_protocol_backlog[-2000:]
-        if source == "parawiz-select" and len(line) > 500:
-            # region agent log
-            _parawiz_agent_ndjson(
-                hypothesis_id="H1",
-                location="main_window._parawiz_execute_ccp",
-                message="after_controller_execute",
-                data={
-                    "line_chars": len(line),
-                    "out_chars": len(str(out or "")),
-                    "refresh_overlay": bool(refresh_selection_overlay),
-                },
-            )
-            # endregion
-        if source == "parawiz" and line.split(None, 1)[0].lower() == "cp":
-            # region agent log
-            _parawiz_agent_ndjson(
-                hypothesis_id="H4",
-                location="main_window._parawiz_execute_ccp",
-                message="after_cp_execute",
-                data={"line_chars": len(line), "out_chars": len(str(out or ""))},
-            )
-            # endregion
         if refresh_selection_overlay:
-            # region agent log
-            if source == "parawiz-select" and len(line) > 500:
-                _parawiz_agent_ndjson(
-                    hypothesis_id="H2",
-                    location="main_window._parawiz_execute_ccp",
-                    message="before_refresh_selection_overlay",
-                    data={"line_chars": len(line)},
-                )
-            # endregion
             self._parawiz_refresh_model_selection_overlay()
-            # region agent log
-            if source == "parawiz-select" and len(line) > 500:
-                _parawiz_agent_ndjson(
-                    hypothesis_id="H2",
-                    location="main_window._parawiz_execute_ccp",
-                    message="after_refresh_selection_overlay",
-                    data={"line_chars": len(line)},
-                )
-            # endregion
         return out
 
     @staticmethod
@@ -2321,7 +2653,19 @@ class MainWindow(QMainWindow):
                         continue
                     staged.append((ds_id, child.id))
 
-        summaries = repo.get_parameter_table_summaries_for_ids([pid for _dsid, pid in staged])
+        all_pids = [pid for _dsid, pid in staged]
+        summaries = {}
+        _sum_chunk = 2000
+        _app_collect = QApplication.instance()
+        for _si in range(0, len(all_pids), _sum_chunk):
+            _part = all_pids[_si : _si + _sum_chunk]
+            summaries.update(repo.get_parameter_table_summaries_for_ids(_part))
+            if (
+                _app_collect is not None
+                and len(all_pids) > _sum_chunk
+                and _si + _sum_chunk < len(all_pids)
+            ):
+                _app_collect.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
 
         seen = 0
         for ds_id, node_id in staged:
@@ -2343,7 +2687,7 @@ class MainWindow(QMainWindow):
         datasets_for_table: list[tuple[str, UUID]] = [
             (stem, did)
             for (stem, did), node in zip(datasets, dataset_nodes, strict=True)
-            if node.name != PARAWIZ_TARGET_DATASET_NAME
+            if not MainWindow._parawiz_node_has_scratch_marker(node)
         ]
         active_target_dataset_id = self._parawiz_scratch_dataset_id()
         copied_ft = frozenset(self._parawiz_target_db_copied_pids)
@@ -2357,24 +2701,42 @@ class MainWindow(QMainWindow):
                 row_styles[name] = _PARAWIZ_ROW_STYLE_NEUTRAL
         else:
             _t_fp0 = time.perf_counter()
+            flt_collect = self._filter_name.text().strip()
+            cross_row_filters = (
+                self._btn_filter_hide_unequal.isChecked() or self._btn_filter_hide_equal.isChecked()
+            )
+            if cross_row_filters:
+                rows_for_style = list(rows)
+            elif len(rows) > max_st and not flt_collect:
+                rows_for_style = []
+            elif flt_collect and len(rows) > max_st:
+                rows_for_style = [
+                    row for row in rows if _parameter_name_matches_filter(row[0], flt_collect)
+                ]
+            else:
+                rows_for_style = list(rows)
+            names_styled = {r[0] for r in rows_for_style}
+
             need_ids: list[UUID] = []
-            for _name, by_ds in rows:
+            for _name, by_ds in rows_for_style:
                 for _dn, ds_id in datasets_for_table:
                     hit = by_ds.get(ds_id)
                     if hit is not None:
                         need_ids.append(hit[2])
-            fp_by_id = repo.get_compare_fingerprints_for_ids(need_ids)
+            fp_by_id = (
+                repo.get_compare_fingerprints_for_ids(need_ids) if need_ids else {}
+            )
+
             for name, by_ds in rows:
-                row_snaps[name] = MainWindow._parawiz_row_compare_snapshot(
-                    by_ds,
-                    datasets_for_table,
-                    fp_by_id=fp_by_id,
-                )
-            flt_collect = self._filter_name.text().strip()
-            rows_for_style = rows
-            if flt_collect and len(rows) > max_st:
-                rows_for_style = [row for row in rows if _parameter_name_matches_filter(row[0], flt_collect)]
-            names_styled = {r[0] for r in rows_for_style}
+                if cross_row_filters or name in names_styled:
+                    row_snaps[name] = MainWindow._parawiz_row_compare_snapshot(
+                        by_ds,
+                        datasets_for_table,
+                        fp_by_id=fp_by_id,
+                    )
+                else:
+                    row_snaps[name] = neutral_row_compare_snapshot()
+
             for name, by_ds in rows:
                 if name not in names_styled:
                     row_styles[name] = _PARAWIZ_ROW_STYLE_NEUTRAL
@@ -2400,22 +2762,26 @@ class MainWindow(QMainWindow):
         self._populate_table_rows(fit_window=False)
 
     def _on_filter_clear_triggered(self) -> None:
-        self._filter_name.clear()
+        self._filter_name.setText("*")
 
     def _parawiz_update_filter_clear_action_visible(self) -> None:
         self._filter_clear_action.setVisible(bool(self._filter_name.text()))
 
     @staticmethod
-    def _parawiz_header_banner_item(text: str, bg_hex: str) -> QTableWidgetItem:
+    def _parawiz_header_banner_item(
+        text: str, bg_hex: str, *, tooltip: str | None = None
+    ) -> QTableWidgetItem:
         it = QTableWidgetItem(text)
         it.setTextAlignment(int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter))
         it.setBackground(QBrush(QColor(bg_hex)))
         it.setForeground(QBrush(QColor("#ffffff")))
         it.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        if tooltip is not None:
+            it.setToolTip(tooltip)
         return it
 
     def _parawiz_install_frozen_header(self) -> None:
-        """Linke Kopfspalte: leere erste Kopfzeile / Parameter Name (scrollt nicht horizontal)."""
+        """Linke Kopfspalte: leere erste Kopfzeile / „Parameter Name“ in der zweiten (scrollt nicht horizontal)."""
         t = self._table_header_frozen
         if hasattr(t, "clearSpans"):
             t.clearSpans()
@@ -2442,6 +2808,12 @@ class MainWindow(QMainWindow):
                 if cw is not None:
                     t.removeCellWidget(ri, ci)
                     cw.deleteLater()
+        for ci in range(tt.columnCount()):
+            for ri in (0, 1):
+                cw = tt.cellWidget(ri, ci)
+                if cw is not None:
+                    tt.removeCellWidget(ri, ci)
+                    cw.deleteLater()
         cc_main = len(datasets)
         t.setColumnCount(cc_main)
         tt.setColumnCount(1 if show_target_column else 0)
@@ -2451,8 +2823,9 @@ class MainWindow(QMainWindow):
             t.setFixedHeight(0)
             if show_target_column:
                 tt.setRowCount(MainWindow.PARAWIZ_TABLE_HEADER_ROWS)
-                tt.setItem(0, 0, self._parawiz_header_banner_item("Target DataSet", "#525252"))
-                tt.setItem(1, 0, self._parawiz_header_banner_item("", "#525252"))
+                self._parawiz_install_target_header_action_row(tt)
+                _tgt_cap0 = self._parawiz_target_column_header_text()
+                self._parawiz_install_target_title_row_widget(tt, _tgt_cap0)
                 tt.resizeRowsToContents()
             else:
                 tt.setRowCount(0)
@@ -2466,55 +2839,68 @@ class MainWindow(QMainWindow):
         ]
         for i, (ps_name, ds_uuid) in enumerate(datasets):
             color = header_colors[i]
-            top_wrap = QWidget(t)
-            top_wrap.setProperty("parawiz_ds_uuid", str(ds_uuid))
-            top_wrap.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-            top_wrap.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
-            top_wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-            top_wrap.setStyleSheet(f"background-color: {color}; border: none; margin: 0px; padding: 0px;")
-            top_lay = QHBoxLayout(top_wrap)
-            top_lay.setContentsMargins(4, 0, 4, 0)
-            top_lay.setSpacing(0)
-            top_lbl = QLabel(ps_name, top_wrap)
-            top_lbl.setProperty("parawiz_ds_uuid", str(ds_uuid))
-            top_lbl.setStyleSheet("color: #ffffff; background: transparent; border: none;")
-            top_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            top_lay.addWidget(top_lbl, 1)
-            for w in (top_wrap, top_lbl):
+            name_wrap = QWidget(t)
+            name_wrap.setMouseTracking(True)
+            name_wrap.setProperty("parawiz_ds_uuid", str(ds_uuid))
+            name_wrap.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            name_wrap.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+            name_wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            name_wrap.setStyleSheet(f"background-color: {color}; border: none; margin: 0px; padding: 0px;")
+            name_lay = QHBoxLayout(name_wrap)
+            name_lay.setContentsMargins(4, 0, 4, 0)
+            name_lay.setSpacing(0)
+            name_lbl = QLabel(ps_name, name_wrap)
+            name_lbl.setMouseTracking(True)
+            name_lbl.setProperty("parawiz_ds_uuid", str(ds_uuid))
+            name_lbl.setProperty("parawiz_full_ds_title", ps_name)
+            name_lbl.setWordWrap(False)
+            name_lbl.setStyleSheet("color: #ffffff; background: transparent; border: none;")
+            name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            name_lay.addWidget(name_lbl, 1)
+            for w in (name_wrap, name_lbl):
                 w.installEventFilter(self)
                 self._parawiz_dataset_title_widgets.add(w)
                 w.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
                 w.customContextMenuRequested.connect(
                     lambda pos, ww=w, du=ds_uuid: self._on_dataset_title_context_menu(ww, pos, du)
                 )
-            t.setCellWidget(0, i, top_wrap)
-        for i, (_ps_name, ds_uuid) in enumerate(datasets):
-            color = header_colors[i]
-            t.setItem(1, i, self._parawiz_header_banner_item("", color))
-            wrap = QWidget(t)
-            wrap.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-            wrap.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
-            wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-            wrap.setStyleSheet(
+            action_wrap = QWidget(t)
+            action_wrap.setMouseTracking(True)
+            action_wrap.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            action_wrap.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+            action_wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            action_wrap.setStyleSheet(
                 f"background-color: {color}; border: none; margin: 0px; padding: 2px 4px;"
             )
-            wrap.setAutoFillBackground(True)
-            wpal = wrap.palette()
+            action_wrap.setAutoFillBackground(True)
+            wpal = action_wrap.palette()
             wpal.setColor(QPalette.ColorRole.Window, QColor(color))
-            wrap.setPalette(wpal)
-            hlay = QHBoxLayout(wrap)
+            action_wrap.setPalette(wpal)
+            hlay = QHBoxLayout(action_wrap)
             hlay.setContentsMargins(0, 0, 0, 0)
-            hlay.setSpacing(0)
-            btn = QToolButton(wrap)
+            hlay.setSpacing(4)
+            btn_swap = QToolButton(action_wrap)
+            btn_swap.setAutoRaise(False)
+            btn_swap.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+            btn_swap.setStyleSheet(theme.parawiz_compact_action_toolbutton_stylesheet())
+            act_swap = QAction(action_wrap)
+            act_swap.setText("")
+            act_swap.setIcon(MainWindow._parawiz_dataset_switch_icon_white(logical_height=18))
+            act_swap.setToolTip(
+                "Diesen Parametersatz und den Zieldatensatz (parawiz_target) im Modell und in der DuckDB "
+                "vertauschen; aktiver Datensatz wird auf diesen Parametersatz gesetzt "
+                "(CCP: swap_ds …, set @main/parameters.active_dataset_name …)."
+            )
+            act_swap.triggered.connect(
+                lambda _c=False, du=ds_uuid: self._parawiz_on_swap_source_column_with_target(du)
+            )
+            btn_swap.setDefaultAction(act_swap)
+            btn_swap.setIconSize(QSize(18, 18))
+            btn = QToolButton(action_wrap)
             btn.setAutoRaise(False)
             btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-            btn.setStyleSheet(
-                "QToolButton { background-color: #2563eb; color: #ffffff; border: 1px solid #1d4ed8; "
-                "border-radius: 3px; padding: 2px; min-width: 22px; min-height: 22px; }"
-                "QToolButton:hover { background-color: #1d4ed8; border: 1px solid #1e40af; }"
-                "QToolButton:pressed { background-color: #1e40af; border: 1px solid #1e3a8a; }"
-            )
-            act = QAction(wrap)
+            btn.setStyleSheet(theme.parawiz_compact_action_toolbutton_stylesheet())
+            act = QAction(action_wrap)
             act.setText("")
             act.setIcon(MainWindow._parawiz_dataset_delete_icon_white(logical_side=18))
             act.setToolTip(
@@ -2522,15 +2908,26 @@ class MainWindow(QMainWindow):
             )
             act.triggered.connect(lambda _c=False, du=ds_uuid: self._parawiz_on_delete_parameter_dataset(du))
             btn.setDefaultAction(act)
+            btn.setIconSize(QSize(18, 18))
             hlay.addWidget(btn, 0, Qt.AlignmentFlag.AlignLeft)
             hlay.addStretch(1)
-            t.setCellWidget(1, i, wrap)
-        tt.setItem(0, 0, self._parawiz_header_banner_item("Target DataSet", "#525252"))
-        tt.setItem(1, 0, self._parawiz_header_banner_item("", "#525252"))
+            hlay.addWidget(btn_swap, 0, Qt.AlignmentFlag.AlignRight)
+            action_wrap.installEventFilter(self)
+            t.setCellWidget(0, i, action_wrap)
+            t.setCellWidget(1, i, name_wrap)
+        self._parawiz_install_target_header_action_row(tt)
+        _tgt_cap = self._parawiz_target_column_header_text()
+        self._parawiz_install_target_title_row_widget(tt, _tgt_cap)
         t.resizeRowsToContents()
         tt.resizeRowsToContents()
         if t.rowCount() >= 2 and t.columnCount() > 0:
-            t.setRowHeight(1, max(t.rowHeight(1), t.rowHeight(0)))
+            _hm = max(t.rowHeight(0), t.rowHeight(1))
+            t.setRowHeight(0, _hm)
+            t.setRowHeight(1, _hm)
+        if tt.rowCount() >= 2 and tt.columnCount() > 0:
+            _htm = max(tt.rowHeight(0), tt.rowHeight(1))
+            tt.setRowHeight(0, _htm)
+            tt.setRowHeight(1, _htm)
 
     def _parawiz_parameter_dataset_node(self, data_set_id: UUID) -> ComplexInstance | None:
         root = self._controller.model.parameter_runtime().data_sets_root()
@@ -2645,6 +3042,128 @@ class MainWindow(QMainWindow):
             return
         self._parawiz_refresh_after_model_mutation(delete_progress=True)
 
+    def _parawiz_on_clear_target_dataset_parameters(self) -> None:
+        """Entfernt alle CAL_PARAM / DB-Zeilen im Zieldatensatz; Knoten bleibt (CCP: ``set <ref>.num_params 0``)."""
+        self._parawiz_ensure_target_scratch_dataset()
+        tid = self._parawiz_scratch_dataset_id()
+        if tid is None:
+            QMessageBox.warning(self, "ParaWiz", "Zieldatensatz parawiz_target nicht im Modell.")
+            return
+        hn = self._parawiz_dataset_hash_name(tid)
+        if not hn:
+            QMessageBox.warning(self, "ParaWiz", "Zieldatensatz nicht im Modell gefunden.")
+            return
+        try:
+            stem = self._controller.model.parameter_runtime().repo.get_dataset_init_file_stem(tid)
+        except Exception:
+            stem = str(tid)[:8] + "…"
+        cmd = f"set {shlex.quote(f'{hn}.num_params')} 0"
+        r = QMessageBox.question(
+            self,
+            "Zieldatensatz leeren",
+            f"Sollen alle Kenngrößen aus dem Zieldatensatz „{stem}“ entfernt werden? Der Parametersatz bleibt "
+            f"im Modell und in der DuckDB-Tabelle data_sets erhalten.\n\nEntspricht dem CCP-Befehl:\n{cmd}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if r != QMessageBox.StandardButton.Yes:
+            return
+        fr_clr = self._dcm_import_ensure_status_frame()
+        fr_clr.set_range(0, 0)
+        fr_clr.set_message("Zieldatensatz · Kenngrößen werden entfernt …")
+        app0 = QApplication.instance()
+        if app0 is not None:
+            app0.processEvents()
+        try:
+            self._parawiz_execute_ccp(cmd, source="set_target_num_params")
+        except CommandError as exc:
+            self._dcm_import_remove_progress_bar()
+            QMessageBox.critical(self, "ParaWiz", str(exc))
+            return
+        self._dcm_import_remove_progress_bar()
+        self._parawiz_target_db_copied_pids.clear()
+        self._parawiz_target_copy_source_col_by_pid.clear()
+        self._parawiz_refresh_after_model_mutation(
+            delete_progress=True,
+            refresh_progress_prefix="Zieldatensatz",
+            refresh_done_status="Zieldatensatz geleert; Parameterliste aktualisiert.",
+        )
+
+    def _parawiz_on_export_target_dcm(self) -> None:
+        """Exportiert ``parawiz_target`` über CCP ``write`` als DCM-Datei."""
+        self._parawiz_ensure_target_scratch_dataset()
+        n = self._parawiz_scratch_dataset_node()
+        if n is None:
+            QMessageBox.warning(self, "ParaWiz", "Zieldatensatz parawiz_target nicht im Modell.")
+            return
+        try:
+            self._controller.model.parameter_runtime().set_active_dataset_name(n.name)
+        except ValueError as exc:
+            QMessageBox.warning(self, "ParaWiz", str(exc))
+            return
+        path, _sel = QFileDialog.getSaveFileName(
+            self,
+            "DCM aus Zieldatensatz speichern",
+            "",
+            "DCM-Dateien (*.dcm);;Alle Dateien (*.*)",
+        )
+        if not str(path).strip():
+            return
+        out = Path(path)
+        if not out.suffix:
+            out = out.with_suffix(".dcm")
+        try:
+            self._parawiz_execute_ccp(f"write {shlex.quote(str(out))}", source="export_target_dcm")
+        except CommandError as exc:
+            QMessageBox.critical(self, "ParaWiz", str(exc))
+            return
+        n_node = self._parawiz_scratch_dataset_node()
+        if n_node is not None:
+            self._controller.model.parameter_runtime().register_data_set_node(
+                n_node,
+                source_path=str(out.resolve()),
+                source_format="dcm",
+                source_hash="",
+            )
+        self._refresh_table(fit_window=False)
+        self.statusBar().showMessage(f"DCM geschrieben: {out}", 8000)
+
+    def _parawiz_on_swap_source_column_with_target(self, data_set_id: UUID) -> None:
+        """Tauscht Quellspalte mit ``parawiz_target`` per CCP (``swap_ds`` + aktiver Datensatz)."""
+        self._parawiz_ensure_target_scratch_dataset()
+        tid = self._parawiz_scratch_dataset_id()
+        if tid is None:
+            QMessageBox.warning(self, "ParaWiz", "Zieldatensatz parawiz_target nicht im Modell.")
+            return
+        if data_set_id == tid:
+            return
+        hn_src = self._parawiz_dataset_hash_name(data_set_id)
+        hn_tgt = self._parawiz_dataset_hash_name(tid)
+        if not hn_src or not hn_tgt:
+            QMessageBox.warning(self, "ParaWiz", "Parametersatz nicht im Modell gefunden.")
+            return
+        node = self._parawiz_parameter_dataset_node(data_set_id)
+        if node is None:
+            QMessageBox.warning(self, "ParaWiz", "Parametersatz nicht im Modell gefunden.")
+            return
+        cmd_swap = f"swap_ds {shlex.quote(hn_src)} {shlex.quote(hn_tgt)}"
+        try:
+            self._parawiz_execute_ccp(cmd_swap, source="swap_with_target")
+            node_after = self._parawiz_parameter_dataset_node(data_set_id)
+            if node_after is None:
+                raise CommandError("Parametersatz nach Tausch nicht im Modell gefunden.")
+            cmd_active = (
+                "set @main/parameters.active_dataset_name "
+                f"{shlex.quote(node_after.name)}"
+            )
+            self._parawiz_execute_ccp(cmd_active, source="swap_with_target")
+        except CommandError as exc:
+            QMessageBox.critical(self, "ParaWiz", str(exc))
+            return
+        self._parawiz_target_db_copied_pids.clear()
+        self._parawiz_target_copy_source_col_by_pid.clear()
+        self._parawiz_refresh_after_model_mutation()
+
     def _parawiz_unify_param_header_heights(self) -> None:
         hf = sum(self._table_header_frozen.rowHeight(r) for r in range(MainWindow.PARAWIZ_TABLE_HEADER_ROWS))
         self._table_header_frozen.setFixedHeight(max(hf, 40))
@@ -2665,52 +3184,21 @@ class MainWindow(QMainWindow):
             if self._table_target_header.columnCount() > 0:
                 self._table_target_header.setFixedHeight(h)
 
-    def _populate_table_rows(
+    def _parawiz_fill_parameter_body_rows(
         self,
+        rows: list[tuple[str, dict[UUID, tuple[str, str, UUID]]]],
+        datasets: list[tuple[str, UUID]],
         *,
-        dcm_table_progress: bool = False,
-        fr: StatusMessageProgressBar | None = None,
-        base: int = 0,
-        gui_rng: int = 1,
-        collect_part: int = 1,
-        fit_window: bool = True,
+        scratch_ds_id: UUID | None,
+        target_enabled: bool,
+        n: int,
+        dcm_table_progress: bool,
+        fr: StatusMessageProgressBar | None,
+        base: int,
+        gui_rng: int,
+        collect_part: int,
+        pump_fill: int,
     ) -> None:
-        _t_pop0 = time.perf_counter()
-        datasets = self._cached_datasets
-        self._parawiz_sync_cross_dataset_filter_buttons()
-        rows = self._parawiz_filtered_rows_list()
-
-        scratch_ds_id = self._parawiz_scratch_dataset_id()
-
-        cc_main = len(datasets)
-        target_enabled = len(datasets) > 0 or scratch_ds_id is not None
-        self._table.setColumnCount(cc_main)
-        self._table_header.setColumnCount(cc_main)
-        self._table_target.setColumnCount(1 if target_enabled else 0)
-        self._table_target_header.setColumnCount(1 if target_enabled else 0)
-        self._param_table_split.set_target_visible(target_enabled)
-        self._table_frozen.setColumnCount(1)
-        self._table.horizontalHeader().setStretchLastSection(False)
-
-        n = len(rows)
-        self._table.setRowCount(n)
-        self._table_target.setRowCount(n)
-        self._table_frozen.setRowCount(n)
-        self._parawiz_install_frozen_header()
-        self._parawiz_install_scroll_headers(datasets, show_target_column=target_enabled)
-        self._parawiz_unify_param_header_heights()
-
-        ds_tuple = tuple(ds_id for _n, ds_id in datasets)
-        if (
-            ds_tuple != self._parawiz_target_overlay_ds_tuple
-            or scratch_ds_id != self._parawiz_target_overlay_active
-        ):
-            self._parawiz_target_db_copied_pids.clear()
-            self._parawiz_target_copy_source_col_by_pid.clear()
-        self._parawiz_target_overlay_ds_tuple = ds_tuple
-        self._parawiz_target_overlay_active = scratch_ds_id
-
-        pump_fill = max(1, n // 50)
         for row_idx, (name, by_ds) in enumerate(rows):
             tr = row_idx
             empty_dataset_brush = MainWindow._parawiz_missing_dataset_brush()
@@ -2781,15 +3269,13 @@ class MainWindow(QMainWindow):
                     )
                     _show_copy_hue = src_col_for_target is not None and _src_cell_fg is not None
                     fn_t = QFont(self._table.font())
-                    fn_t.setBold(_show_copy_hue)
+                    # Wie Datensatz-Zellen derselben Zeile: fett nur bei Werte/Achsen-Unterschied,
+                    # nicht nur weil die Quellzelle eine Meta-Cluster-Farbe trägt.
+                    _bold_tgt = st.row_bold if _show_copy_hue else False
+                    fn_t.setBold(_bold_tgt)
                     it_target.setFont(fn_t)
-                    _tfg = None
-                    if _show_copy_hue:
-                        _tfg = QColor(
-                            _PARAWIZ_DIFF_CLUSTER_HEX[src_col_for_target % len(_PARAWIZ_DIFF_CLUSTER_HEX)]
-                        )
-                    if _tfg is not None:
-                        it_target.setForeground(QBrush(_tfg))
+                    if _show_copy_hue and _src_cell_fg is not None:
+                        it_target.setForeground(QBrush(_src_cell_fg))
                     self._table_target.setItem(tr, 0, it_target)
             if dcm_table_progress and fr is not None and self._dcm_import_status_frame_in_bar and n > 0:
                 if row_idx % pump_fill == 0 or row_idx == n - 1:
@@ -2802,9 +3288,147 @@ class MainWindow(QMainWindow):
                     if app is not None:
                         app.processEvents()
 
+    def _populate_table_rows(
+        self,
+        *,
+        dcm_table_progress: bool = False,
+        fr: StatusMessageProgressBar | None = None,
+        base: int = 0,
+        gui_rng: int = 1,
+        collect_part: int = 1,
+        fit_window: bool = True,
+    ) -> None:
+        _t_pop0 = time.perf_counter()
+        datasets = self._cached_datasets
+        self._parawiz_sync_cross_dataset_filter_buttons()
+        rows = self._parawiz_filtered_rows_list()
+
+        scratch_ds_id = self._parawiz_scratch_dataset_id()
+
+        cc_main = len(datasets)
+        target_enabled = len(datasets) > 0 or scratch_ds_id is not None
+        prev_main_n = self._table.columnCount()
+        prev_main_widths = [self._table.columnWidth(i) for i in range(prev_main_n)]
+        prev_target_n = self._table_target.columnCount()
+        prev_target_w = self._table_target.columnWidth(0) if prev_target_n > 0 else None
+        prev_frozen_w = (
+            self._table_frozen.columnWidth(0) if self._table_frozen.columnCount() > 0 else None
+        )
+        n = len(rows)
+        _pw_all_tbls = (
+            self._table,
+            self._table_target,
+            self._table_frozen,
+            self._table_header,
+            self._table_header_frozen,
+            self._table_target_header,
+        )
+        for _w in _pw_all_tbls:
+            _w.setUpdatesEnabled(False)
+        _pw_sel_block: list[QItemSelectionModel] = []
+        for _b in (self._table, self._table_target, self._table_frozen):
+            _sm = _b.selectionModel()
+            if _sm is not None:
+                _sm.blockSignals(True)
+                _pw_sel_block.append(_sm)
+        try:
+            self._table.setColumnCount(cc_main)
+            self._table_header.setColumnCount(cc_main)
+            self._table_target.setColumnCount(1 if target_enabled else 0)
+            self._table_target_header.setColumnCount(1 if target_enabled else 0)
+            self._param_table_split.set_target_visible(target_enabled)
+            self._table_frozen.setColumnCount(1)
+            self._table.horizontalHeader().setStretchLastSection(False)
+
+            self._table.setRowCount(n)
+            self._table_target.setRowCount(n)
+            self._table_frozen.setRowCount(n)
+            self._parawiz_install_frozen_header()
+            self._parawiz_install_scroll_headers(datasets, show_target_column=target_enabled)
+            self._parawiz_unify_param_header_heights()
+
+            ds_tuple = tuple(ds_id for _n, ds_id in datasets)
+            if (
+                ds_tuple != self._parawiz_target_overlay_ds_tuple
+                or scratch_ds_id != self._parawiz_target_overlay_active
+            ):
+                self._parawiz_target_db_copied_pids.clear()
+                self._parawiz_target_copy_source_col_by_pid.clear()
+            self._parawiz_target_overlay_ds_tuple = ds_tuple
+            self._parawiz_target_overlay_active = scratch_ds_id
+
+            pump_fill = max(1, n // 50)
+            self._parawiz_fill_parameter_body_rows(
+                rows,
+                datasets,
+                scratch_ds_id=scratch_ds_id,
+                target_enabled=target_enabled,
+                n=n,
+                dcm_table_progress=dcm_table_progress,
+                fr=fr,
+                base=base,
+                gui_rng=gui_rng,
+                collect_part=collect_part,
+                pump_fill=pump_fill,
+            )
+
+            self._parawiz_update_filter_count_label()
+            min_col_w = 72
+            restore_layout = cc_main > 0 and len(prev_main_widths) == cc_main
+            if restore_layout:
+                self._parawiz_header_scroll_guard = True
+                try:
+                    for i in range(cc_main):
+                        wcol = max(min_col_w, prev_main_widths[i])
+                        self._table.setColumnWidth(i, wcol)
+                        self._table_header.setColumnWidth(i, wcol)
+                    if prev_frozen_w is not None:
+                        wf = max(min_col_w, prev_frozen_w)
+                        self._table_frozen.setColumnWidth(0, wf)
+                        self._table_header_frozen.setColumnWidth(0, wf)
+                    ttw = self._table_target
+                    tth = self._table_target_header
+                    if target_enabled:
+                        if prev_target_w is not None and prev_target_n > 0:
+                            w_t = max(min_col_w, prev_target_w)
+                            ttw.setColumnWidth(0, w_t)
+                            tth.setColumnWidth(0, w_t)
+                            self._param_table_split.set_target_fixed_width(w_t)
+                        else:
+                            ttw.resizeColumnsToContents()
+                            tth.resizeColumnsToContents()
+                            w_raw = max(min_col_w, ttw.columnWidth(0), tth.columnWidth(0))
+                            w_t = max(
+                                min_col_w,
+                                MainWindow._parawiz_initial_column_width_from_content(w_raw),
+                            )
+                            ttw.setColumnWidth(0, w_t)
+                            tth.setColumnWidth(0, w_t)
+                            self._param_table_split.set_target_fixed_width(w_t)
+                            for i in range(cc_main):
+                                self._table.setColumnWidth(i, w_t)
+                                self._table_header.setColumnWidth(i, w_t)
+                    self._parawiz_compact_body_row_heights()
+                    self._parawiz_apply_param_table_total_width()
+                finally:
+                    self._parawiz_header_scroll_guard = False
+            else:
+                self._parawiz_uniform_column_widths()
+        finally:
+            # Nach Zeilen-/Spaltenwechsel können alte QModelIndex-Selektionen ungültig bleiben;
+            # das führt bei späterem Klick/Deselect zu Abstürzen in Qt. Leeren, solange Signale blockiert sind.
+            for _b in (self._table, self._table_target, self._table_frozen):
+                _smc = _b.selectionModel()
+                if _smc is not None:
+                    _smc.clearSelection()
+                    _smc.clearCurrentIndex()
+            for _sm in _pw_sel_block:
+                _sm.blockSignals(False)
+            for _w in _pw_all_tbls:
+                _w.setUpdatesEnabled(True)
+
         self._parawiz_refresh_model_selection_overlay()
-        self._parawiz_update_filter_count_label()
-        self._parawiz_uniform_column_widths()
+        QTimer.singleShot(0, self._parawiz_refresh_dataset_header_visuals)
         self._parawiz_reset_param_table_hscroll()
         if _parawiz_profile_enabled():
             _pop_ms = (time.perf_counter() - _t_pop0) * 1000.0
@@ -2826,14 +3450,17 @@ class MainWindow(QMainWindow):
         dcm_imported_hint: int = 1,
         delete_table_progress: bool = False,
         fit_window: bool = True,
+        progress_prefix: str = "Löschen",
+        refresh_done_status: str | None = None,
     ) -> None:
         _t_refresh0 = time.perf_counter()
         fr = self._dcm_import_status_frame
         t = self._dcm_import_write_total
+        _prog_px = progress_prefix if delete_table_progress else "Löschen"
         if delete_table_progress:
             fr = self._dcm_import_ensure_status_frame()
             fr.set_range(0, 0)
-            fr.set_message("Parameterliste wird neu geladen …")
+            fr.set_message(f"{_prog_px} · Parameterliste wird neu geladen …")
             app = QApplication.instance()
             if app is not None:
                 app.processEvents()
@@ -2863,7 +3490,7 @@ class MainWindow(QMainWindow):
         def _on_delete_collect_seen(seen: int) -> None:
             if fr is None or not self._dcm_import_status_frame_in_bar:
                 return
-            fr.set_message(f"Löschen · Parameterliste wird eingelesen ({seen}) …")
+            fr.set_message(f"{_prog_px} · Parameterliste wird eingelesen ({seen}) …")
             app = QApplication.instance()
             if app is not None:
                 app.processEvents()
@@ -2896,7 +3523,7 @@ class MainWindow(QMainWindow):
             base = 0
             fr.set_range(0, gui_rng)
             fr.set_value(0)
-            fr.set_message(f"Löschen · Tabelle wird aufgebaut ({n} Zeilen) …")
+            fr.set_message(f"{_prog_px} · Tabelle wird aufgebaut ({n} Zeilen) …")
             app = QApplication.instance()
             if app is not None:
                 app.processEvents()
@@ -2928,7 +3555,10 @@ class MainWindow(QMainWindow):
             fr.set_value(base + gui_rng)
             fr.set_message("Tabelle aktualisiert.")
             self._dcm_import_remove_progress_bar()
-            self.statusBar().showMessage("Parametersatz gelöscht.", 6000)
+            self.statusBar().showMessage(
+                refresh_done_status or "Parametersatz gelöscht.",
+                6000,
+            )
         elif not dcm_table_progress and not delete_table_progress:
             flt = self._filter_name.text().strip()
             shown = self._table_frozen.rowCount()
@@ -2954,6 +3584,8 @@ class MainWindow(QMainWindow):
         self,
         *,
         delete_progress: bool = False,
+        refresh_progress_prefix: str = "Löschen",
+        refresh_done_status: str | None = None,
         fit_window: bool = True,
         on_layout_complete: Callable[[], None] | None = None,
         profile_copy: bool = False,
@@ -2964,7 +3596,12 @@ class MainWindow(QMainWindow):
         ``on_layout_complete`` läuft nach erstem Layout/Viewport-Update (``QTimer(0)``), z. B. Selektion löschen.
         """
         _t_mut0 = time.perf_counter()
-        self._refresh_table(delete_table_progress=delete_progress, fit_window=fit_window)
+        self._refresh_table(
+            delete_table_progress=delete_progress,
+            fit_window=fit_window,
+            progress_prefix=refresh_progress_prefix,
+            refresh_done_status=refresh_done_status,
+        )
         if profile_copy and _parawiz_profile_copy_enabled():
             _parawiz_profile_copy_log(
                 "refresh_after_mutation: sync_refresh_table_ms=%.1f"
@@ -3127,19 +3764,6 @@ class MainWindow(QMainWindow):
 
     def _parawiz_refresh_model_selection_overlay(self) -> None:
         """Modell-Selektion (``select``) wird nur per Delegate übermalt, nicht als Qt-Selection."""
-        # region agent log
-        _nr = int(self._table.rowCount())
-        if _nr > 500:
-            _parawiz_agent_ndjson(
-                hypothesis_id="H2",
-                location="main_window._parawiz_refresh_model_selection_overlay",
-                message="viewport_update_start",
-                data={
-                    "table_rows": _nr,
-                    "n_model_sel": len(getattr(self._controller, "selection", []) or []),
-                },
-            )
-        # endregion
         self._table.viewport().update()
         self._table_target.viewport().update()
 
@@ -3205,17 +3829,32 @@ class MainWindow(QMainWindow):
         sm = self._table.selectionModel()
         if sm is None or self._parawiz_sel_row_guard:
             return
+        # Nicht eingreifen, während ParameterTableSplitView die Zeile über Tabellen hinweg spiegelt —
+        # sonst kollidiert „eine Zelle pro Zeile“ mit der Sync-Selektion (Abstürze / Endlosschleifen).
+        if self._param_table_split.is_syncing_row_selection:
+            return
         cur = sm.currentIndex()
-        if cur.isValid() and cur.column() >= 0:
-            self._parawiz_last_main_focus_col = int(cur.column())
+        _ncol = self._table.columnCount()
+        _nrow = self._table.rowCount()
+        if _ncol <= 0 or _nrow <= 0:
+            return
+        if cur.isValid() and cur.column() >= 0 and _ncol > 0:
+            if cur.row() >= 0 and cur.row() < _nrow:
+                self._parawiz_last_main_focus_col = min(int(cur.column()), _ncol - 1)
         by_row: dict[int, list] = {}
         for ix in sm.selectedIndexes():
+            if not ix.isValid():
+                continue
+            if ix.row() < 0 or ix.row() >= _nrow or ix.column() < 0 or ix.column() >= _ncol:
+                continue
             by_row.setdefault(ix.row(), []).append(ix)
         to_deselect = []
         for row, ixs in by_row.items():
             if len(ixs) <= 1:
                 continue
             keep = cur if (cur.isValid() and cur.row() == row) else ixs[-1]
+            if not keep.isValid():
+                continue
             for ix in ixs:
                 if ix.row() != keep.row() or ix.column() != keep.column():
                     to_deselect.append(ix)
@@ -3223,12 +3862,13 @@ class MainWindow(QMainWindow):
             self._parawiz_sel_row_guard = True
             try:
                 for ix in to_deselect:
-                    sm.select(ix, QItemSelectionModel.SelectionFlag.Deselect)
+                    if ix.isValid() and ix.row() < _nrow and ix.column() < _ncol:
+                        sm.select(ix, QItemSelectionModel.SelectionFlag.Deselect)
             finally:
                 self._parawiz_sel_row_guard = False
 
     def _parawiz_toggle_model_selection_for_parameter(self, pid: UUID) -> None:
-        """Alt+Klick / additiv: bereits selektiert → aus Modell-Selektion entfernen (``select -m``)."""
+        """Alt+Klick / Kontext „additiv“: Anhängen ohne andere Spalten derselben Zeile zu verlieren; erneut: ``select -m``."""
         ref = self._parawiz_hash_name_for_parameter_id(pid)
         if not ref:
             self.statusBar().showMessage("Parameter ohne hash_name — Modell-Selektion nicht möglich.", 5000)
@@ -3245,7 +3885,7 @@ class MainWindow(QMainWindow):
                 return
             self.statusBar().showMessage("Parameter aus Modell-Selektion entfernt.", 3500)
             return
-        n = self._parawiz_select_parameter_ids([pid], append=True)
+        n = self._parawiz_select_parameter_ids([pid], append=True, enforce_row_uniqueness=False)
         if n:
             self.statusBar().showMessage("Parameter zur Modell-Selektion hinzugefügt.", 3500)
 
@@ -3269,18 +3909,6 @@ class MainWindow(QMainWindow):
             select_lines = _parawiz_build_ccp_select_lines(
                 refs, max_cmd_chars=self._PARAWIZ_CCP_CMD_MAX_TOTAL
             )
-            # region agent log
-            _parawiz_agent_ndjson(
-                hypothesis_id="H3",
-                location="main_window._parawiz_select_parameter_ids",
-                message="branch_replace_selection",
-                data={
-                    "n_refs": len(refs),
-                    "n_lines": len(select_lines),
-                    "max_line_chars": max(len(x) for x in select_lines) if select_lines else 0,
-                },
-            )
-            # endregion
             try:
                 for _si, _ln in enumerate(select_lines):
                     self._parawiz_execute_ccp(
@@ -3302,20 +3930,10 @@ class MainWindow(QMainWindow):
             if not refs_bulk:
                 return 0
             select_lines = _parawiz_build_ccp_select_lines(
-                refs_bulk, max_cmd_chars=self._PARAWIZ_CCP_CMD_MAX_TOTAL
+                refs_bulk,
+                max_cmd_chars=self._PARAWIZ_CCP_CMD_MAX_TOTAL,
+                every_chunk_append=True,
             )
-            # region agent log
-            _parawiz_agent_ndjson(
-                hypothesis_id="H3",
-                location="main_window._parawiz_select_parameter_ids",
-                message="branch_bulk_append",
-                data={
-                    "n_refs": len(refs_bulk),
-                    "n_lines": len(select_lines),
-                    "max_line_chars": max(len(x) for x in select_lines) if select_lines else 0,
-                },
-            )
-            # endregion
             try:
                 for _si, _ln in enumerate(select_lines):
                     self._parawiz_execute_ccp(
@@ -3355,18 +3973,6 @@ class MainWindow(QMainWindow):
         add_refs = [r for pid in effective if (r := self._parawiz_hash_name_for_parameter_id(pid))]
         if not add_refs:
             return 0
-        # region agent log
-        _parawiz_agent_ndjson(
-            hypothesis_id="H3",
-            location="main_window._parawiz_select_parameter_ids",
-            message="branch_row_uniqueness",
-            data={
-                "n_rm_refs": len(rm_refs),
-                "n_add_refs": len(add_refs),
-                "n_effective_pids": len(effective),
-            },
-        )
-        # endregion
         try:
             if rm_refs:
                 for _ln in _parawiz_build_ccp_minus_m_lines(
@@ -3378,7 +3984,9 @@ class MainWindow(QMainWindow):
                         refresh_selection_overlay=False,
                     )
             add_lines = _parawiz_build_ccp_select_lines(
-                add_refs, max_cmd_chars=self._PARAWIZ_CCP_CMD_MAX_TOTAL
+                add_refs,
+                max_cmd_chars=self._PARAWIZ_CCP_CMD_MAX_TOTAL,
+                every_chunk_append=True,
             )
             for _si, _ln in enumerate(add_lines):
                 self._parawiz_execute_ccp(
@@ -3399,23 +4007,53 @@ class MainWindow(QMainWindow):
             if hit is None:
                 continue
             pids.append(hit[2])
-        # region agent log
-        _parawiz_agent_ndjson(
-            hypothesis_id="H1",
-            location="main_window._parawiz_select_filtered_dataset_parameters",
-            message="dataset_select_start",
-            data={"n_pids": len(pids), "append": append},
-        )
-        # endregion
         n = self._parawiz_select_parameter_ids(
             pids, append=append, enforce_row_uniqueness=False
         )
         mode = "addiert" if append else "gesetzt"
         if n > 0:
-            self.statusBar().showMessage(f"Modell-Selektion {mode}: {n} Parameter.", 4500)
+            self.statusBar().showMessage(f"Modell-Selektion {mode}: {n} Parameter (nur sichtbar per Filter).", 4500)
         else:
             self.statusBar().showMessage("Keine Parameter im aktuellen Filter für diesen Datensatz.", 4500)
         return n
+
+    def _parawiz_deselect_filtered_dataset_parameters(self, ds_id: UUID) -> int:
+        """Entfernt nur die Modell-Selektion für Parameter dieser Spalte, die aktuell durch den Namensfilter sichtbar sind."""
+        rows = self._parawiz_filtered_rows_list()
+        refs: list[str] = []
+        for _name, by_ds in rows:
+            hit = by_ds.get(ds_id)
+            if hit is None:
+                continue
+            pid = hit[2]
+            ref = self._parawiz_hash_name_for_parameter_id(pid)
+            if not ref:
+                continue
+            if self._parawiz_parameter_is_in_model_selection(pid, ref):
+                refs.append(ref)
+        refs = list(dict.fromkeys(refs))
+        if not refs:
+            self.statusBar().showMessage(
+                "Keine zur Abwahl: keine sichtbaren Parameter dieser Spalte (Filter) in der Modell-Selektion.",
+                4500,
+            )
+            return 0
+        try:
+            lines = _parawiz_build_ccp_minus_m_lines(refs, max_cmd_chars=self._PARAWIZ_CCP_CMD_MAX_TOTAL)
+            for _si, _ln in enumerate(lines):
+                self._parawiz_execute_ccp(
+                    _ln,
+                    source="parawiz-select",
+                    refresh_selection_overlay=_si == len(lines) - 1,
+                )
+        except CommandError as exc:
+            self.statusBar().showMessage(f"Abwahl fehlgeschlagen: {exc}", 5000)
+            return 0
+        self.statusBar().showMessage(
+            f"Modell-Selektion: {len(refs)} Parameter dieser Spalte (nur sichtbar per Filter) entfernt.",
+            4500,
+        )
+        return len(refs)
 
     def _parawiz_selected_parameter_row_indices(self) -> set[int]:
         rows: set[int] = set()
@@ -3522,28 +4160,64 @@ class MainWindow(QMainWindow):
             return [fc]
         return []
 
-    def _parawiz_scratch_dataset_id(self) -> UUID | None:
-        """UUID von ``parawiz_target``.
+    @staticmethod
+    def _parawiz_node_has_scratch_marker(node: ComplexInstance) -> bool:
+        try:
+            v = node.get(PARAWIZ_SCRATCH_MARKER_ATTR)
+        except KeyError:
+            return False
+        if isinstance(v, bool):
+            return v
+        return str(v).strip().lower() in ("1", "true", "yes", "on")
 
-        Unabhängig von ``active_dataset_name`` (erste DCM-Registrierung setzt diese oft).
-        """
+    @staticmethod
+    def _parawiz_apply_scratch_marker(node: ComplexInstance) -> None:
+        dict.__setitem__(
+            node.attribute_dict,
+            PARAWIZ_SCRATCH_MARKER_ATTR,
+            (True, None, None, True, True),
+        )
+        node._touch()
+
+    def _parawiz_scratch_dataset_node(self) -> ComplexInstance | None:
+        """Scratch-/Zieldatensatz-Knoten (stabiler Marker; Name kann nach ``swap_ds`` getauscht sein)."""
         try:
             rt = self._controller.model.parameter_runtime()
             rt.ensure_tree()
             root = rt.data_sets_root()
+            legacy: ComplexInstance | None = None
             for c in root.children:
                 if not isinstance(c, ComplexInstance) or c.id is None:
                     continue
-                if c.name != PARAWIZ_TARGET_DATASET_NAME:
-                    continue
                 try:
-                    if str(c.get("type")) == "MODEL.PARAMETER_DATA_SET":
-                        return c.id
+                    if str(c.get("type")) != "MODEL.PARAMETER_DATA_SET":
+                        continue
                 except Exception:
                     continue
+                if MainWindow._parawiz_node_has_scratch_marker(c):
+                    return c
+                if c.name == PARAWIZ_TARGET_DATASET_NAME:
+                    legacy = c
+            if legacy is not None:
+                MainWindow._parawiz_apply_scratch_marker(legacy)
+                return legacy
         except Exception:
             return None
         return None
+
+    def _parawiz_scratch_dataset_id(self) -> UUID | None:
+        """UUID des ParaWiz-Zieldatensatzes (Scratch)."""
+        n = self._parawiz_scratch_dataset_node()
+        return n.id if n is not None else None
+
+    def _parawiz_target_column_header_text(self) -> str:
+        sid = self._parawiz_scratch_dataset_id()
+        if sid is None:
+            return "Target DataSet"
+        try:
+            return self._controller.model.parameter_runtime().repo.get_dataset_init_file_stem(sid)
+        except Exception:
+            return "Target DataSet"
 
     def _parawiz_ensure_target_scratch_dataset(self) -> None:
         """Leeren Zieldatensatz ``parawiz_target`` anlegen und in DuckDB registrieren.
@@ -3553,14 +4227,18 @@ class MainWindow(QMainWindow):
         rt = self._controller.model.parameter_runtime()
         rt.ensure_tree()
         ds_root = rt.data_sets_root()
-        existing: ComplexInstance | None = None
-        for c in ds_root.children:
-            if isinstance(c, ComplexInstance) and c.name == PARAWIZ_TARGET_DATASET_NAME and c.id is not None:
-                existing = c
-                break
+
+        def _meta_str(n: ComplexInstance, key: str, default: str) -> str:
+            try:
+                return str(n.get(key))
+            except KeyError:
+                return default
+
+        existing = self._parawiz_scratch_dataset_node()
         if existing is None:
             node = ComplexInstance(name=PARAWIZ_TARGET_DATASET_NAME)
             self._controller.model.attach(node, parent=ds_root, reserve_existing=False, remap_ids=False)
+            MainWindow._parawiz_apply_scratch_marker(node)
             rt.register_data_set_node(
                 node,
                 source_path="",
@@ -3568,14 +4246,17 @@ class MainWindow(QMainWindow):
                 source_hash="",
             )
         else:
+            MainWindow._parawiz_apply_scratch_marker(existing)
             rt.register_data_set_node(
                 existing,
-                source_path="",
-                source_format="unknown",
-                source_hash="",
+                source_path=_meta_str(existing, "source_path", ""),
+                source_format=_meta_str(existing, "source_format", "unknown"),
+                source_hash=_meta_str(existing, "source_hash", ""),
             )
         try:
-            rt.set_active_dataset_name(PARAWIZ_TARGET_DATASET_NAME)
+            n_act = self._parawiz_scratch_dataset_node()
+            if n_act is not None:
+                rt.set_active_dataset_name(n_act.name)
         except ValueError:
             pass
 
@@ -3869,16 +4550,16 @@ class MainWindow(QMainWindow):
 
     def _on_dataset_title_context_menu(self, w: QWidget, pos, ds_id: UUID) -> None:
         menu = QMenu(self)
-        act_add = menu.addAction("Parameter dieses Datensatzes zur Selektion (additiv; erneut: entfernen)")
-        act_replace = menu.addAction("Selektion ersetzen mit Datensatz-Parametern")
-        act_clear = menu.addAction("Selektion aufheben")
+        act_add = menu.addAction("Add Column to selection (Filter)")
+        act_replace = menu.addAction("Set Column as Selection (Filter)")
+        act_clear = menu.addAction("Deselect Column (Filter)")
         picked = menu.exec(w.mapToGlobal(pos))
         if picked is act_add:
             self._parawiz_select_filtered_dataset_parameters(ds_id, append=True)
         elif picked is act_replace:
             self._parawiz_select_filtered_dataset_parameters(ds_id, append=False)
         elif picked is act_clear:
-            self._parawiz_clear_model_selection()
+            self._parawiz_deselect_filtered_dataset_parameters(ds_id)
 
     def _open_parameter_cell_context_menu(self, gpos, pid: UUID | None) -> None:
         menu = QMenu(self)

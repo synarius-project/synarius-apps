@@ -11,6 +11,8 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
 
+from synarius_dataviewer.app import theme as _dv_theme
+
 # Einmal erzeugen: mehrere Größen helfen Windows-Taskbar und HiDPI-Titelleisten.
 _PARAWIZ_APP_ICON_CACHE: QIcon | None = None
 
@@ -58,7 +60,7 @@ def _fallback_parawiz_icon_pixmap(edge: int = 64) -> QPixmap:
     """Placeholder when ``synarius64.png`` is not on disk (e.g. asset not shipped in checkout)."""
     e = max(16, int(edge))
     pm = QPixmap(e, e)
-    pm.fill(QColor("#586cd4"))
+    pm.fill(QColor(_dv_theme.PARAWIZ_ACTION_BUTTON_BACKGROUND))
     p = QPainter(pm)
     try:
         p.setRenderHint(QPainter.RenderHint.Antialiasing)

@@ -31,12 +31,56 @@ STUDIO_TOOLBAR_ACTION_PRESSED = _rgb_hex_scale(STUDIO_TOOLBAR_ACTIVE_ACTION_BACK
 
 SELECTION_HIGHLIGHT = STUDIO_TOOLBAR_ACTIVE_ACTION_BACKGROUND
 
+# ParaWiz: Faktor für die initiale Breite der Parametersatz-Spalten (Quelle + Ziel), bezogen auf die
+# schmale Qt-Schätzung nach ``resizeColumnsToContents``. 2.0 ≈ doppelte initiale Breite.
+PARAWIZ_PARAMETER_TABLE_INITIAL_COLUMN_WIDTH_FACTOR = 2.0
+
 # ParaWiz: CCP ``select`` / Modell-Selektion (nur Overlay, nicht Qt-Selection).
 PARAWIZ_PARAMETER_SELECTION_BACKGROUND = "#8b5cf6"
 PARAWIZ_PARAMETER_SELECTION_FOREGROUND = "#ffffff"
 # ParaWiz: Qt-Zeilen-/Gummibandauswahl → Kopieren in die Zwischenablage (unabhängig vom Modell-``select``).
 PARAWIZ_CLIPBOARD_SELECTION_BACKGROUND = STUDIO_TOOLBAR_ACTIVE_ACTION_BACKGROUND
 PARAWIZ_CLIPBOARD_SELECTION_FOREGROUND = "#ffffff"
+
+# ParaWiz: einheitliche blaue Icon-Action-Buttons (Filterzeile, Kopieren, Datensatz löschen im Kopf).
+PARAWIZ_ACTION_BUTTON_BACKGROUND = STUDIO_TOOLBAR_ACTIVE_ACTION_BACKGROUND
+PARAWIZ_ACTION_BUTTON_BORDER = "#3f51b8"
+PARAWIZ_ACTION_BUTTON_HOVER = "#6a7ce0"
+PARAWIZ_ACTION_BUTTON_HOVER_BORDER = "#1e40af"
+PARAWIZ_ACTION_BUTTON_PRESSED = "#4f61c8"
+PARAWIZ_ACTION_BUTTON_PRESSED_BORDER = "#1e3a8a"
+PARAWIZ_ACTION_BUTTON_CHECKED_BORDER = "#ffffff"
+PARAWIZ_ACTION_BUTTON_DISABLED_BG = "#6d7482"
+PARAWIZ_ACTION_BUTTON_DISABLED_BORDER = "#565c69"
+
+
+def parawiz_compact_action_toolbutton_stylesheet() -> str:
+    """QSS für kompakte ParaWiz-QToolButton-Actions (Filter-Toggles, Kopieren, Datensatz löschen)."""
+    bg = PARAWIZ_ACTION_BUTTON_BACKGROUND
+    bdr = PARAWIZ_ACTION_BUTTON_BORDER
+    hov = PARAWIZ_ACTION_BUTTON_HOVER
+    hov_b = PARAWIZ_ACTION_BUTTON_HOVER_BORDER
+    prs = PARAWIZ_ACTION_BUTTON_PRESSED
+    prs_b = PARAWIZ_ACTION_BUTTON_PRESSED_BORDER
+    chk = PARAWIZ_ACTION_BUTTON_CHECKED_BORDER
+    dis_bg = PARAWIZ_ACTION_BUTTON_DISABLED_BG
+    dis_b = PARAWIZ_ACTION_BUTTON_DISABLED_BORDER
+    return (
+        f"QToolButton {{"
+        f" background-color: {bg};"
+        f" color: #ffffff;"
+        f" border: 1px solid {bdr};"
+        f" border-radius: 4px;"
+        f" padding: 2px;"
+        f"}}"
+        f"QToolButton:hover {{ background-color: {hov}; border: 1px solid {hov_b}; }}"
+        f"QToolButton:pressed {{ background-color: {prs}; border: 1px solid {prs_b}; }}"
+        f"QToolButton:checked {{ border: 2px solid {chk}; }}"
+        f"QToolButton:disabled {{"
+        f" background-color: {dis_bg};"
+        f" border: 1px solid {dis_b};"
+        f"}}"
+    )
 
 
 def selection_highlight_qcolor(*, opaque: bool = True) -> QColor:

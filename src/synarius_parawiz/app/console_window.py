@@ -150,7 +150,8 @@ class ConsoleWindow(QMainWindow):
             self._console.append_output("Protocol commands:", self._default_output_color)
             self._console.append_output(
                 "  ls, lsattr [-l], cd <path>, new ..., select ... (-p append, -m remove), "
-                "set ..., get ..., del ... | del @selected",
+                "set …, get …, swap_ds <dsRef> <dsRef>, del … | del @selected "
+                "(Ziel leeren: set <DataSetRef>.num_params 0)",
                 self._default_output_color,
             )
             self._show_prompt()
