@@ -400,7 +400,10 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _parawiz_cross_dataset_filter_button_stylesheet() -> str:
-        """Kompakter Toggle-Button für Gleich/Abweichend — Farben aus ``theme.parawiz_compact_action_toolbutton_stylesheet``."""
+        """Kompakter Toggle für Gleich/Abweichend.
+
+        Farben aus ``theme.parawiz_compact_action_toolbutton_stylesheet``.
+        """
         return theme.parawiz_compact_action_toolbutton_stylesheet()
 
     def __init__(self) -> None:
@@ -3868,7 +3871,10 @@ class MainWindow(QMainWindow):
                 self._parawiz_sel_row_guard = False
 
     def _parawiz_toggle_model_selection_for_parameter(self, pid: UUID) -> None:
-        """Alt+Klick / Kontext „additiv“: Anhängen ohne andere Spalten derselben Zeile zu verlieren; erneut: ``select -m``."""
+        """Alt+Klick / Kontext „additiv“: Anhängen ohne Zeilenverlust.
+
+        Erneuter Aufruf: ``select -m``.
+        """
         ref = self._parawiz_hash_name_for_parameter_id(pid)
         if not ref:
             self.statusBar().showMessage("Parameter ohne hash_name — Modell-Selektion nicht möglich.", 5000)
@@ -4018,7 +4024,7 @@ class MainWindow(QMainWindow):
         return n
 
     def _parawiz_deselect_filtered_dataset_parameters(self, ds_id: UUID) -> int:
-        """Entfernt nur die Modell-Selektion für Parameter dieser Spalte, die aktuell durch den Namensfilter sichtbar sind."""
+        """Entfernt Modell-Selektion nur für sichtbare (gefilterte) Parameter dieser Spalte."""
         rows = self._parawiz_filtered_rows_list()
         refs: list[str] = []
         for _name, by_ds in rows:

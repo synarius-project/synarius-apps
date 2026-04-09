@@ -40,7 +40,8 @@ def main() -> int:
         )
     if os.environ.get("SYNARIUS_PARAWIZ_PROFILE", "").strip().lower() in ("1", "true", "yes", "on"):
         print(
-            "ParaWiz: SYNARIUS_PARAWIZ_PROFILE aktiv — Laufzeitzeilen (collect/populate/refresh + Kopieren) auf stderr.",
+            "ParaWiz: SYNARIUS_PARAWIZ_PROFILE aktiv — Laufzeitzeilen "
+            "(collect/populate/refresh + Kopieren) auf stderr.",
             file=sys.stderr,
             flush=True,
         )
