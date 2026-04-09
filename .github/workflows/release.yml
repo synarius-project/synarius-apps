@@ -68,6 +68,7 @@ jobs:
           <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
             <Product Id="*" Name="Synarius Apps (Dataviewer)" Language="1033" Version="$version" Manufacturer="Synarius Contributors" UpgradeCode="A91F3E2D-8B4C-4F6A-9D1E-7C0B5A384726">
               <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
+              <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." AllowSameVersionUpgrades="no" />
               <MediaTemplate EmbedCab="yes" />
               <WixVariable Id="WixUILicenseRtf" Value="disclaimer.rtf" />
               <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
@@ -111,9 +112,10 @@ jobs:
                             Name="Synarius Dataviewer"
                             Description="Start Synarius Dataviewer"
                             Target="[INSTALLFOLDER]synarius-dataviewer.exe"
-                            WorkingDirectory="INSTALLFOLDER" />
+                            WorkingDirectory="INSTALLFOLDER"
+                            Icon="DataviewerAppIcon" />
                   <RemoveFolder Id="ApplicationProgramsFolderRemove" On="uninstall" />
-                  <RegistryValue Root="HKCU"
+                  <RegistryValue Root="HKLM"
                                  Key="Software\Synarius\synarius-apps"
                                  Name="StartMenuShortcut"
                                  Type="integer"
@@ -121,6 +123,9 @@ jobs:
                                  KeyPath="yes" />
                 </Component>
               </DirectoryRef>
+            </Fragment>
+            <Fragment>
+              <Icon Id="DataviewerAppIcon" SourceFile="dist\synarius-dataviewer.exe" />
             </Fragment>
           </Wix>
           "@ | Out-File -Encoding UTF8 installer.wxs
