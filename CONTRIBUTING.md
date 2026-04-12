@@ -12,7 +12,7 @@ Thank you for your interest in contributing!
 ## Getting started
 
 1. Fork the repository and create a feature branch.
-2. Install in development mode (see [README.md](README.md) — local editable **synarius-core** is often required).
+2. Use a **virtual environment** and install in development mode (see [README.md](README.md) — local editable **synarius-core** is often required). Always use the **same** `python` for `pip`, running apps, and `pytest`; **PySide6** must be present in that environment (declared in `pyproject.toml`).
 3. Run tests (e.g. `pytest`) before opening a PR.
 4. Ensure CI passes.
 

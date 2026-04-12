@@ -35,22 +35,29 @@ Implementation lives in `src/synarius_parawiz/`; run it with **`synarius-parawiz
 
 ## Install (development)
 
-**Python 3.11.x** is required (see `requires-python` in `pyproject.toml`).
+**Python 3.11–3.14** is supported (see `requires-python` in `pyproject.toml`). Use a **virtual environment** and the **same** interpreter for `pip`/`python` and for your IDE.
+
+**PySide6** is a declared dependency; after install, confirm imports with the same `python` you use to run the apps:
+
+```bash
+python -c "from PySide6.QtCore import Qt, QTimer; print('PySide6 OK')"
+```
 
 **CI / clones** resolve `synarius-core` via the Git URL pinned in `pyproject.toml`. Measurement file I/O is implemented in **synarius-core** (`synarius_core.io`); this package still declares `pandas` / `pyarrow` / `asammdf` / `numpy` so installers resolve one consistent stack.
 
 ```bash
-pip install -e .
+python -m pip install -U pip
+python -m pip install -e .
 ```
 
 **Local monorepo** (sibling checkout of `synarius-core`):
 
 ```bash
-cd ../synarius-core && pip install -e ".[timeseries]"
-cd ../synarius-apps && pip install -e .
+cd ../synarius-core && python -m pip install -e ".[timeseries]"
+cd ../synarius-apps && python -m pip install -e .
 ```
 
-If `pip` reports a conflict between the pinned Git revision of `synarius-core` and your local editable core, install the app with `pip install -e . --no-deps` after `pip install -e "../synarius-core[timeseries]"`, then add missing deps manually.
+If `pip` reports a conflict between the pinned Git revision of `synarius-core` and your local editable core, install the app with `python -m pip install -e . --no-deps` after `python -m pip install -e "../synarius-core[timeseries]"`, then add missing deps manually.
 
 Console entry point (name kept for compatibility):
 
