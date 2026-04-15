@@ -4,7 +4,7 @@ from typing import Callable
 
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QMainWindow, QVBoxLayout, QWidget
-from synarius_core.controller import CommandError, MinimalController
+from synarius_core.controller import CommandError, SynariusController
 
 from synarius_dataviewer.app import theme
 from synariustools.tools.terminal_console import TerminalConsoleWidget
@@ -25,7 +25,7 @@ class ConsoleWindow(QMainWindow):
     def __init__(
         self,
         *,
-        controller: MinimalController,
+        controller: SynariusController,
         on_execute_line: Callable[[str, str], str | None],
         prompt_provider: Callable[[], str],
         on_command_executed: Callable[[str], None],
@@ -150,7 +150,7 @@ class ConsoleWindow(QMainWindow):
             self._console.append_output("Protocol commands:", self._default_output_color)
             self._console.append_output(
                 "  ls, lsattr [-l], cd <path>, new ..., select ... (-p append, -m remove), "
-                "set …, get …, swap_ds <dsRef> <dsRef>, del … | del @selected "
+                "set …, get …, del … | del @selected "
                 "(Ziel leeren: set <DataSetRef>.num_params 0)",
                 self._default_output_color,
             )

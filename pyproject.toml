@@ -7,12 +7,15 @@ name = "synarius-apps"
 version = "0.0.1"
 description = "Synarius applications and shared tools (Dataviewer, synariustools plot widget; built on synarius-core)."
 readme = "README.md"
-requires-python = ">=3.11,<3.12"
+requires-python = ">=3.11,<3.15"
 license = { file = "LICENSE" }
 authors = [{ name = "Synarius Contributors" }]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
 ]
 dependencies = [
@@ -21,7 +24,8 @@ dependencies = [
   # ParametersRepository (synarius_core.parameters) needs DuckDB; pin here so synarius-apps venv always has it.
   "duckdb>=1.5.1",
   # Time-series loaders live in synarius_core.io (install core with .[timeseries] when using core alone).
-  "synarius-core @ git+https://github.com/synarius-project/synarius-core.git@2037d854ce4f00b46200d92af1728267248af3ee",
+  # Monorepo: lokaler Core (statt Git-Pin), damit dieselbe Python-Version wie im Workspace gilt.
+  "synarius-core[timeseries,fmu] @ file:../synarius-core",
   "PySide6>=6.5.0",
   "pandas>=2.0.0",
   "pyarrow>=14.0.0",
@@ -61,7 +65,10 @@ include = ["synarius_apps_diagnostics*", "synarius_dataviewer*", "synarius_paraw
 extraPaths = ["../synarius-core/src"]
 
 [project.optional-dependencies]
-dev = []
+dev = [
+  "pytest>=7.0",
+  "pytest-cov>=4.0",
+]
 docs = [
   "sphinx",
   "sphinx-needs",

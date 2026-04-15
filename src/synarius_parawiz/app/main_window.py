@@ -53,7 +53,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from synarius_core.controller import CommandError, MinimalController
+from synarius_core.controller import CommandError, SynariusController
 from synarius_core.model.data_model import ComplexInstance
 from synarius_core.parameters.repository import (
     ParameterCompareFingerprints,
@@ -156,7 +156,7 @@ _PARAWIZ_DIFF_CLUSTER_HEX = (
 _PARAWIZ_NAME_COL_MIXED_HEX = "#4b5563"
 # Fester Modellname: separater Schreib-/Zielsatensatz (nur Target-Spalte), nicht als Vergleichsspalte.
 PARAWIZ_TARGET_DATASET_NAME = "parawiz_target"
-# Modellattribut: markiert den ParaWiz-Scratch-Datensatz (UUID stabil; Name darf nach swap_ds getauscht sein).
+# Modellattribut: markiert den ParaWiz-Scratch-Datensatz (UUID stabil; Spaltenreihenfolge über CCP ``dataset_display_order``).
 PARAWIZ_SCRATCH_MARKER_ATTR = "parawiz_scratch_marker"
 
 
@@ -168,7 +168,7 @@ def _parawiz_build_ccp_select_lines(
     Ohne ``every_chunk_append``: erste Zeile ``select …`` (ersetzt Selektion), weitere ``select -p …`` (anfügen).
 
     Mit ``every_chunk_append=True``: alle Zeilen ``select -p …`` — nötig, wenn zur bestehenden Modell-Selektion
-    angefügt werden soll (siehe ``MinimalController._cmd_select``).
+    angefügt werden soll (siehe ``SynariusController._cmd_select``).
     """
     if not refs:
         return []
@@ -414,7 +414,7 @@ class MainWindow(QMainWindow):
         if not self._app_icon.isNull():
             self.setWindowIcon(self._app_icon)
 
-        self._controller = MinimalController()
+        self._controller = SynariusController()
         self._controller.cp_selection_progress_hook = self._parawiz_cp_selection_progress
         self._console_window: ConsoleWindow | None = None
         self._parawiz_protocol_backlog: list[tuple[str, str]] = []
@@ -866,7 +866,7 @@ class MainWindow(QMainWindow):
             app.quit()
 
     def _parawiz_cp_selection_progress(self, idx: int, total: int) -> None:
-        """Von ``MinimalController._cmd_cp_selection_to_dataset``: Fortschrittsbalken in der Statuszeile."""
+        """Von ``SynariusController._cmd_cp_selection_to_dataset``: Fortschrittsbalken in der Statuszeile."""
         if total <= 0:
             return
         app = QApplication.instance()
@@ -2238,7 +2238,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _syn_script_dcm_import_meta(script_path: Path) -> tuple[bool, int]:
-        """True if the script contains ``import dcm`` lines; byte sum of resolvable DCM paths (for progress UI)."""
+        """True if the script contains ``import -dcm=…``; byte sum of resolvable DCM paths (for progress UI)."""
         import shlex
 
         has_import = False
@@ -2256,13 +2256,20 @@ class MainWindow(QMainWindow):
                 parts = shlex.split(s)
             except ValueError:
                 continue
-            if len(parts) < 3 or parts[0] != "import" or parts[1] != "dcm":
+            if len(parts) < 2 or parts[0] != "import":
+                continue
+            raw: str | None = None
+            for part in parts[1:]:
+                if part.startswith("-dcm="):
+                    raw = part[len("-dcm=") :]
+                    break
+            if raw is None or not str(raw).strip():
                 continue
             has_import = True
-            raw = parts[2]
-            p = Path(raw).expanduser()
+            raw_s = str(raw).strip()
+            p = Path(raw_s).expanduser()
             if not p.is_file():
-                alt = (base / raw).expanduser()
+                alt = (base / raw_s).expanduser()
                 if alt.is_file():
                     p = alt
             if p.is_file():
@@ -2687,11 +2694,25 @@ class MainWindow(QMainWindow):
         _pairs.sort(key=lambda p: (str(p[0][0]).lower(), str(p[0][1])))
         datasets = [p[0] for p in _pairs]
         dataset_nodes = [p[1] for p in _pairs]
-        datasets_for_table: list[tuple[str, UUID]] = [
-            (stem, did)
-            for (stem, did), node in zip(datasets, dataset_nodes, strict=True)
-            if not MainWindow._parawiz_node_has_scratch_marker(node)
-        ]
+        rt = model.parameter_runtime()
+        rt.ensure_tree()
+        eff_ids = rt.effective_main_column_dataset_ids()
+        pair_by_id: dict[UUID, tuple[str, UUID, ComplexInstance]] = {}
+        for (stem, did), node in zip(datasets, dataset_nodes, strict=True):
+            pair_by_id[did] = (stem, did, node)
+        ordered_pairs: list[tuple[str, UUID, ComplexInstance]] = []
+        seen_order: set[UUID] = set()
+        for uid in eff_ids:
+            hit = pair_by_id.get(uid)
+            if hit is None:
+                continue
+            ordered_pairs.append(hit)
+            seen_order.add(uid)
+        for (stem, did), node in zip(datasets, dataset_nodes, strict=True):
+            if did in seen_order:
+                continue
+            ordered_pairs.append((stem, did, node))
+        datasets_for_table = [(stem, did) for stem, did, _n in ordered_pairs]
         active_target_dataset_id = self._parawiz_scratch_dataset_id()
         copied_ft = frozenset(self._parawiz_target_db_copied_pids)
         row_styles: dict[str, _ParawizRowCrossDsStyle] = {}
@@ -2892,7 +2913,7 @@ class MainWindow(QMainWindow):
             act_swap.setToolTip(
                 "Diesen Parametersatz und den Zieldatensatz (parawiz_target) im Modell und in der DuckDB "
                 "vertauschen; aktiver Datensatz wird auf diesen Parametersatz gesetzt "
-                "(CCP: swap_ds …, set @main/parameters.active_dataset_name …)."
+                "(CCP: set @main/parameters.dataset_display_order …, target_column_data_set_id …, active_dataset_name …)."
             )
             act_swap.triggered.connect(
                 lambda _c=False, du=ds_uuid: self._parawiz_on_swap_source_column_with_target(du)
@@ -3079,6 +3100,10 @@ class MainWindow(QMainWindow):
             app0.processEvents()
         try:
             self._parawiz_execute_ccp(cmd, source="set_target_num_params")
+            self._parawiz_execute_ccp(
+                "set @main/parameters.target_column_data_set_id None",
+                source="set_target_num_params",
+            )
         except CommandError as exc:
             self._dcm_import_remove_progress_bar()
             QMessageBox.critical(self, "ParaWiz", str(exc))
@@ -3132,7 +3157,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"DCM geschrieben: {out}", 8000)
 
     def _parawiz_on_swap_source_column_with_target(self, data_set_id: UUID) -> None:
-        """Tauscht Quellspalte mit ``parawiz_target`` per CCP (``swap_ds`` + aktiver Datensatz)."""
+        """Tauscht Quellspalte mit ``parawiz_target`` per CCP (``dataset_display_order`` + Zielspalte + aktiver Datensatz)."""
         self._parawiz_ensure_target_scratch_dataset()
         tid = self._parawiz_scratch_dataset_id()
         if tid is None:
@@ -3140,25 +3165,32 @@ class MainWindow(QMainWindow):
             return
         if data_set_id == tid:
             return
-        hn_src = self._parawiz_dataset_hash_name(data_set_id)
-        hn_tgt = self._parawiz_dataset_hash_name(tid)
-        if not hn_src or not hn_tgt:
-            QMessageBox.warning(self, "ParaWiz", "Parametersatz nicht im Modell gefunden.")
-            return
         node = self._parawiz_parameter_dataset_node(data_set_id)
         if node is None:
             QMessageBox.warning(self, "ParaWiz", "Parametersatz nicht im Modell gefunden.")
             return
-        cmd_swap = f"swap_ds {shlex.quote(hn_src)} {shlex.quote(hn_tgt)}"
+        rt = self._controller.model.parameter_runtime()
+        rt.ensure_tree()
+        eff = rt.effective_main_column_dataset_ids()
         try:
-            self._parawiz_execute_ccp(cmd_swap, source="swap_with_target")
-            node_after = self._parawiz_parameter_dataset_node(data_set_id)
-            if node_after is None:
-                raise CommandError("Parametersatz nach Tausch nicht im Modell gefunden.")
-            cmd_active = (
-                "set @main/parameters.active_dataset_name "
-                f"{shlex.quote(node_after.name)}"
-            )
+            idx = eff.index(data_set_id)
+        except ValueError:
+            QMessageBox.warning(self, "ParaWiz", "Parametersatz nicht in der aktuellen Spaltenreihenfolge.")
+            return
+        new_order = list(eff)
+        new_order[idx] = tid
+        cmd_order = (
+            "set @main/parameters.dataset_display_order "
+            f"{shlex.quote(repr([str(u) for u in new_order]))}"
+        )
+        cmd_target_col = (
+            "set @main/parameters.target_column_data_set_id "
+            f"{shlex.quote(str(data_set_id))}"
+        )
+        cmd_active = "set @main/parameters.active_dataset_name " f"{shlex.quote(node.name)}"
+        try:
+            self._parawiz_execute_ccp(cmd_order, source="swap_with_target")
+            self._parawiz_execute_ccp(cmd_target_col, source="swap_with_target")
             self._parawiz_execute_ccp(cmd_active, source="swap_with_target")
         except CommandError as exc:
             QMessageBox.critical(self, "ParaWiz", str(exc))
@@ -3192,7 +3224,7 @@ class MainWindow(QMainWindow):
         rows: list[tuple[str, dict[UUID, tuple[str, str, UUID]]]],
         datasets: list[tuple[str, UUID]],
         *,
-        scratch_ds_id: UUID | None,
+        target_column_ds_id: UUID | None,
         target_enabled: bool,
         n: int,
         dcm_table_progress: bool,
@@ -3248,7 +3280,7 @@ class MainWindow(QMainWindow):
                     it_m.setForeground(QBrush(_cell_fg))
                 self._table.setItem(tr, i, it_m)
             if target_enabled:
-                hit_t = by_ds.get(scratch_ds_id) if scratch_ds_id is not None else None
+                hit_t = by_ds.get(target_column_ds_id) if target_column_ds_id is not None else None
                 # Sichtbarkeit aus Repo (GUI-, CLI- und sonstige cp @selection); kein separates Overlay-Set.
                 show_tgt = hit_t is not None
                 if not show_tgt:
@@ -3307,6 +3339,9 @@ class MainWindow(QMainWindow):
         rows = self._parawiz_filtered_rows_list()
 
         scratch_ds_id = self._parawiz_scratch_dataset_id()
+        rt_pw = self._controller.model.parameter_runtime()
+        rt_pw.ensure_tree()
+        target_column_ds_id = rt_pw.effective_target_column_dataset_id()
 
         cc_main = len(datasets)
         target_enabled = len(datasets) > 0 or scratch_ds_id is not None
@@ -3364,7 +3399,7 @@ class MainWindow(QMainWindow):
             self._parawiz_fill_parameter_body_rows(
                 rows,
                 datasets,
-                scratch_ds_id=scratch_ds_id,
+                target_column_ds_id=target_column_ds_id,
                 target_enabled=target_enabled,
                 n=n,
                 dcm_table_progress=dcm_table_progress,
@@ -4186,7 +4221,7 @@ class MainWindow(QMainWindow):
         node._touch()
 
     def _parawiz_scratch_dataset_node(self) -> ComplexInstance | None:
-        """Scratch-/Zieldatensatz-Knoten (stabiler Marker; Name kann nach ``swap_ds`` getauscht sein)."""
+        """Scratch-/Zieldatensatz-Knoten (stabiler Marker; Spaltenzuordnung über ``dataset_display_order`` / ``target_column_data_set_id``)."""
         try:
             rt = self._controller.model.parameter_runtime()
             rt.ensure_tree()
