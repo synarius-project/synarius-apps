@@ -156,7 +156,8 @@ _PARAWIZ_DIFF_CLUSTER_HEX = (
 _PARAWIZ_NAME_COL_MIXED_HEX = "#4b5563"
 # Fester Modellname: separater Schreib-/Zielsatensatz (nur Target-Spalte), nicht als Vergleichsspalte.
 PARAWIZ_TARGET_DATASET_NAME = "parawiz_target"
-# Modellattribut: markiert den ParaWiz-Scratch-Datensatz (UUID stabil; Spaltenreihenfolge über CCP ``dataset_display_order``).
+# Modellattribut: markiert den ParaWiz-Scratch-Datensatz
+# (UUID stabil; Spaltenreihenfolge über CCP ``dataset_display_order``).
 PARAWIZ_SCRATCH_MARKER_ATTR = "parawiz_scratch_marker"
 
 
@@ -2913,7 +2914,8 @@ class MainWindow(QMainWindow):
             act_swap.setToolTip(
                 "Diesen Parametersatz und den Zieldatensatz (parawiz_target) im Modell und in der DuckDB "
                 "vertauschen; aktiver Datensatz wird auf diesen Parametersatz gesetzt "
-                "(CCP: set @main/parameters.dataset_display_order …, target_column_data_set_id …, active_dataset_name …)."
+                "(CCP: set @main/parameters.dataset_display_order …, "
+                "target_column_data_set_id …, active_dataset_name …)."
             )
             act_swap.triggered.connect(
                 lambda _c=False, du=ds_uuid: self._parawiz_on_swap_source_column_with_target(du)
@@ -3157,7 +3159,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"DCM geschrieben: {out}", 8000)
 
     def _parawiz_on_swap_source_column_with_target(self, data_set_id: UUID) -> None:
-        """Tauscht Quellspalte mit ``parawiz_target`` per CCP (``dataset_display_order`` + Zielspalte + aktiver Datensatz)."""
+        """Tauscht Quellspalte mit ``parawiz_target`` per CCP
+        (``dataset_display_order`` + Zielspalte + aktiver Datensatz)."""
         self._parawiz_ensure_target_scratch_dataset()
         tid = self._parawiz_scratch_dataset_id()
         if tid is None:
@@ -4221,7 +4224,8 @@ class MainWindow(QMainWindow):
         node._touch()
 
     def _parawiz_scratch_dataset_node(self) -> ComplexInstance | None:
-        """Scratch-/Zieldatensatz-Knoten (stabiler Marker; Spaltenzuordnung über ``dataset_display_order`` / ``target_column_data_set_id``)."""
+        """Scratch-/Zieldatensatz-Knoten (stabiler Marker; Spaltenzuordnung
+        über ``dataset_display_order`` / ``target_column_data_set_id``)."""
         try:
             rt = self._controller.model.parameter_runtime()
             rt.ensure_tree()

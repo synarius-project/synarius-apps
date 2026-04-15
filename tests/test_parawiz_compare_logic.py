@@ -9,7 +9,6 @@ from synarius_parawiz.app.parameter_compare_logic import (
     neutral_row_compare_snapshot,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
