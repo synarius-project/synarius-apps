@@ -272,6 +272,8 @@ class DataViewerWidget(QWidget):
         # region agent log
         _sz = _save_svg.stat().st_size if _save_svg.is_file() else None
         _ic = act_save.icon()
+        _tbs = self._toolbar.toolButtonStyle()
+        _tbs_log = _tbs.value if hasattr(_tbs, "value") else str(_tbs)
         _dbg_payload = {
             "hypothesisId": "H1-H5",
             "runId": "post-fix",
@@ -286,7 +288,7 @@ class DataViewerWidget(QWidget):
                 "icon_is_null": _ic.isNull(),
                 "save_used_sp_dialog_fallback": _save_used_std_fallback,
                 "icon_available_sizes": [[s.width(), s.height()] for s in _ic.availableSizes()],
-                "toolbar_tool_button_style": int(self._toolbar.toolButtonStyle()),
+                "toolbar_tool_button_style": _tbs_log,
                 "save_action_text": act_save.text(),
             },
         }
